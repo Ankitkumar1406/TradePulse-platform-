@@ -1,0 +1,285 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// One row per NSE-listed equity (universe). Snapshot quote fields come from
+// the Yahoo screener; indicator fields are computed from 2y close series.
+model Stock {
+  symbol       String   @id // e.g. RELIANCE.NS
+  name         String
+  exchangeCode String? // NSI (mainboard) / NCM (SME)
+
+  // Snapshot quote
+  price        Float?
+  prevClose    Float?
+  changePct    Float?
+  open         Float?
+  dayHigh      Float?
+  dayLow       Float?
+  volume       Float?
+  avgVol3M     Float?
+  marketCap    Float? // INR
+  peTTM        Float?
+  epsTTM       Float?
+  bookValue    Float?
+  pbRatio      Float?
+  divYield     Float?
+  high52       Float?
+  low52        Float?
+  sma50Yahoo   Float? // 50-day average from Yahoo snapshot
+  sma200Yahoo  Float? // 200-day average from Yahoo snapshot
+
+  // Computed indicators (from 2y daily closes)
+  sma20        Float?
+  sma50        Float?
+  sma200       Float?
+  ema20        Float?
+  rsi14        Float?
+  macd         Float?
+  macdSignal   Float?
+  macdHist     Float?
+  atr14Pct     Float? // avg true range % (volatility proxy from closes)
+  mom1M        Float? // % return ~21 trading days
+  mom3M        Float? // ~63 days
+  mom6M        Float? // ~126 days
+  fromHighPct  Float? // % below 52w high (0 = at high)
+  fromLowPct   Float? // % above 52w low
+
+  // Extended indicators (Task 25) — weekly timeframe, Bollinger, price-vs-MA
+  wRsi14        Float? // RSI(14) on weekly closes
+  wMacdHist     Float? // MACD(12,26,9) histogram on weekly closes
+  bbPctB        Float? // Bollinger %B (20, 2σ) on daily closes, 0-100 (100 = at upper band)
+  bbWidthPct    Float? // Bollinger band width as % of the mid line (squeeze = low)
+  emaCross      Boolean? // ema20 > ema50
+  distSma20Pct  Float? // (price / sma20 - 1) * 100 — negative = below the MA
+  distSma50Pct  Float?
+  distSma100Pct Float?
+  distSma200Pct Float?
+  distEma20Pct  Float?
+  distEma50Pct  Float?
+  distEma100Pct Float?
+  distEma200Pct Float?
+
+  // Signal flags for fast screener filtering
+  aboveSma20   Boolean?
+  aboveSma50   Boolean?
+  aboveSma200  Boolean?
+  goldenCross  Boolean? // sma20 > sma50
+  volSpike     Boolean? // volume > 2x avgVol3M
+
+  // 2y close series as compact JSON: [[unixTs, close], ...] ascending
+  closes       String?
+  closesSynced DateTime?
+
+  // Full OHLCV bars in DailyBar (pattern scanners). barsSynced = last full pass.
+  barsSynced DateTime?
+
+  // Next earnings date (calendarEvents) — enables results calendar & earnings scans
+  earningsDate   DateTime?
+  earningsSynced DateTime?
+
+  // Sector (filled by quoteSummary trickle sync / on-demand)
+  sector         String?
+  industry       String?
+  sectorSynced   DateTime?
+
+  // BananaPatterns-style industry hierarchy (Task 19): indGrp = industry
+  // (~58, e.g. "Banks"), subGrp = subgroup (~150, e.g. "Private Sector Bank").
+  // Backfilled from src/lib/taxonomy.ts (Yahoo industry map + symbol overrides).
+  indGrp       String?
+  subGrp       String?
+  quoteTime      DateTime?
+  universeSynced DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([marketCap])
+  @@index([changePct])
+  @@index([sector])
+  @@index([rsi14])
+  @@index([indGrp])
+  @@index([subGrp])
+}
+
+// OHLCV daily bars, fetched on demand for stock detail views and cached.
+model DailyBar {
+  id     String @id @default(cuid())
+  symbol String
+  date   String // YYYY-MM-DD (IST)
+  open   Float
+  high   Float
+  low    Float
+  close  Float
+  volume Float
+
+  @@unique([symbol, date])
+  @@index([symbol])
+}
+
+model WatchlistItem {
+  id        String   @id @default(cuid())
+  symbol    String   @unique
+  note      String?
+  createdAt DateTime @default(now())
+}
+
+model PriceAlert {
+  id          String    @id @default(cuid())
+  symbol      String
+  condition   String // "above" | "below"
+  target      Float
+  active      Boolean   @default(true)
+  triggeredAt DateTime?
+  triggeredPc Float?
+  createdAt   DateTime  @default(now())
+
+  @@index([symbol])
+}
+
+// Single-row sync state for the universe pipeline.
+model SyncState {
+  id            String    @id @default("main")
+  phase         String    @default("idle") // idle | universe | closes | sectors | done
+  status        String    @default("idle") // idle | running | done | error
+  universeTotal Int       @default(0)
+  universeDone  Int       @default(0)
+  closesTotal   Int       @default(0)
+  closesDone    Int       @default(0)
+  sectorsTotal  Int       @default(0)
+  sectorsDone   Int       @default(0)
+  barsTotal     Int       @default(0)
+  barsDone      Int       @default(0)
+  earningsTotal Int       @default(0)
+  earningsDone  Int       @default(0)
+  lastError     String?
+  startedAt     DateTime?
+  updatedAt     DateTime  @updatedAt
+}
+
+// TradePulse user. Created on first login (Supabase Auth when configured,
+// local email + password fallback otherwise); profile fields are completed
+// through the mandatory first-time onboarding flow.
+model User {
+  id           String  @id @default(cuid())
+  email        String  @unique
+  supabaseId   String? @unique // Supabase auth.users id (when Supabase enabled)
+  passwordHash String? // scrypt hash — local fallback mode only
+  image        String?
+
+  // Profile (onboarding). name/phone are mandatory; the rest are optional.
+  name       String?
+  phone      String?
+  city       String?
+  experience String? // beginner | intermediate | advanced
+  interests  String? // comma-separated focus areas
+  onboarded  Boolean  @default(false)
+
+  // Monetization: every new account starts with a 15-day Pro trial.
+  // plan/planCycle/planExpiresAt reflect the last PAID subscription;
+  // effective tier is computed at session time (paid > trial > basic).
+  plan          String    @default("basic") // basic | pro
+  planCycle     String? // monthly | quarterly | halfyearly | annual
+  planExpiresAt DateTime?
+  trialEndsAt   DateTime? // 15-day Pro trial window (set at signup)
+  autoRenew     Boolean   @default(true) // autopay mandate active — renewals debit automatically at expiry
+
+  payments Payment[]
+
+  journal JournalEntry[]
+  savedScreens SavedScreen[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([email])
+}
+
+// User-defined screener setups ("Create/Load Screener"). kind="conditions" is a
+// multi-condition stock filter; kind="multi" is a multi-scan confluence set.
+// definition holds the JSON payload needed to re-run the screen.
+model SavedScreen {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  kind       String // "conditions" | "multi"
+  definition String // JSON payload (condition rows or selected scan ids + min matches)
+  createdAt  DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// Professional trading journal. kind="trade" logs a position with prices and
+// auto-computed P&L / R multiple; kind="note" is a pure learning/observation
+// entry (market notes, mistakes review, plan write-ups).
+model JournalEntry {
+  id         String  @id @default(cuid())
+  userId     String
+  user       User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind       String // "trade" | "note"
+  date       String // trade/note date, YYYY-MM-DD
+  title      String? // note headline (kind=note); optional trade caption
+  symbol     String? // NSE symbol, e.g. RELIANCE.NS (kind=trade)
+  side       String? // "long" | "short"
+  entryPrice Float?
+  exitPrice  Float? // null = position still open
+  quantity   Float?
+  stopLoss   Float?
+  target     Float?
+  setup      String? // setup tag (Breakout, Pullback, VCP, ...)
+  confidence Int? // 1-5 conviction at entry
+  wentWell   String?
+  wentWrong  String?
+  learning   String? // key takeaway — the heart of the journal
+  notes      String? // free-form detail (kind=note body or extra trade notes)
+  tags       String? // comma-separated free tags
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, date])
+}
+
+// Market calendar: NSE holidays, special sessions, F&O expiries, macro events
+// (RBI MPC, FOMC, Union Budget) and earnings-season windows. Global (not per
+// user), seeded from src/lib/market-calendar.ts.
+model MarketEvent {
+  id          String  @id @default(cuid())
+  key         String  @unique // stable seed key, e.g. "nse-holiday-2026-10-02"
+  date        String // YYYY-MM-DD (start)
+  endDate     String? // multi-day events (RBI MPC)
+  title       String
+  category    String // holiday | market | expiry | macro | earnings | other
+  impact      String // high | medium | low
+  source      String? // NSE / RBI / Federal Reserve / TradePulse
+  tentative   Boolean @default(false) // true = expected, subject to official circular
+  description String? // what it is
+  details     String? // why traders care + how to prepare
+
+  @@index([date])
+}
+
+// One row per checkout attempt (Cashfree order or sandbox demo order).
+model Payment {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider  String    @default("cashfree") // cashfree | demo
+  orderId   String    @unique // tp_... (Cashfree order id / demo order id)
+  sessionId String? // Cashfree payment_session_id (cashfree mode only)
+  cycle     String // monthly | quarterly | halfyearly | annual
+  amount    Int // paise (INR * 100)
+  currency  String    @default("INR")
+  status    String    @default("CREATED") // CREATED | PAID | FAILED
+  renewal   Boolean   @default(false) // true = autopay renewal debit (not the first authorization)
+  paidAt    DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([userId])
+}

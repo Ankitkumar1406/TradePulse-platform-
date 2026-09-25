@@ -1,0 +1,253 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * TradePulse theming — light is the DEFAULT theme, dark is opt-in.
+ *
+ * Strategy (per ui-ux-pro-max guidance: semantic tokens, 4.5:1 contrast,
+ * tonal variants rather than naive inversion): every zinc-* and accent-300/400
+ * utility used across the app resolves through a per-theme CSS variable, so
+ * `bg-zinc-950` / `text-zinc-400` / `text-emerald-400` etc. automatically pick
+ * the correct tonal step for the active theme. Components keep their existing
+ * role-based classes; only this file decides what they look like per theme.
+ *
+ *  - :root  → light fintech palette (white surfaces, zinc borders, AA text)
+ *  - .dark  → the original TradePulse dark look (zinc-950 OLED-style)
+ */
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+
+  /* TradePulse brand tokens (theme-aware, values defined below) */
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-brand-text: var(--brand-text);
+  --color-gold: var(--gold);
+  --color-gold-text: var(--gold-text);
+  --color-profit: var(--profit);
+  --color-loss: var(--loss);
+
+  /* Neutral scale — remapped per theme (role-preserving tonal flip) */
+  --color-zinc-950: var(--tp-z950);
+  --color-zinc-900: var(--tp-z900);
+  --color-zinc-800: var(--tp-z800);
+  --color-zinc-700: var(--tp-z700);
+  --color-zinc-600: var(--tp-z600);
+  --color-zinc-500: var(--tp-z500);
+  --color-zinc-400: var(--tp-z400);
+  --color-zinc-300: var(--tp-z300);
+  --color-zinc-200: var(--tp-z200);
+  --color-zinc-100: var(--tp-z100);
+  --color-zinc-50: var(--tp-z50);
+
+  /* Accent text shades that need darker steps on light backgrounds (AA) */
+  --color-emerald-300: var(--tp-emerald-300);
+  --color-emerald-400: var(--tp-emerald-400);
+  --color-red-400: var(--tp-red-400);
+  --color-amber-300: var(--tp-amber-300);
+  --color-sky-300: var(--tp-sky-300);
+  --color-violet-300: var(--tp-violet-300);
+
+  /* Chart palette (candle-chart SVG reads these) */
+  --color-chart-grid: var(--tp-chart-grid);
+  --color-chart-axis: var(--tp-chart-axis);
+  --color-chart-sma20: var(--tp-chart-sma20);
+  --color-chart-sma50: var(--tp-chart-sma50);
+
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* Light theme — TradePulse brand palette:
+   bg #F7F8FA · brand #0B6E4F · gold #D4A72C · text #1A1A1A/#4A4A4A
+   functional gains/loss #0F9D58 / #D64545 (darkened one step for AA small text) */
+:root {
+  color-scheme: light;
+  --radius: 0.625rem;
+
+  /* Brand — deep green CTAs pass AA with white text */
+  --brand: #0b6e4f;
+  --brand-hover: #095c42;
+  --brand-text: #0b6e4f;
+  --gold: #d4a72c;
+  --gold-text: #8a6512;
+  --profit: #0b8043;
+  --loss: #c73a3a;
+
+  /* Neutral ramp — cool grays keyed to the #F7F8FA canvas:
+     bg steps go canvas → white cards → borders; text steps #1A1A1A → #4A4A4A */
+  --tp-z950: #f7f8fa; /* page background            */
+  --tp-z900: #ffffff; /* cards, panels, inputs      */
+  --tp-z800: #e4e7eb; /* borders, chips             */
+  --tp-z700: #c6cbd1; /* strong borders             */
+  --tp-z600: #9aa0a6; /* muted borders / icons      */
+  --tp-z500: #6b7076; /* muted text                 */
+  --tp-z400: #4a4a4a; /* secondary text (spec)      */
+  --tp-z300: #3a3e42; /* body text                  */
+  --tp-z200: #26292c; /* body-strong text           */
+  --tp-z100: #1a1a1a; /* headings (spec)            */
+  --tp-z50: #141618;  /* strongest headings         */
+
+  /* Accents — darker tonal steps for AA on light surfaces */
+  --tp-emerald-300: #0b6e4f;
+  --tp-emerald-400: #0b6e4f;
+  --tp-red-400: #c73a3a;
+  --tp-amber-300: #8a6512;
+  --tp-sky-300: #0369a1;
+  --tp-violet-300: #6d28d9;
+
+  /* Charts */
+  --tp-chart-grid: #e4e7eb;
+  --tp-chart-axis: #878c93;
+  --tp-chart-sma20: #a87d12;
+  --tp-chart-sma50: #6b7076;
+
+  /* shadcn primitives */
+  --background: #f7f8fa;
+  --foreground: #1a1a1a;
+  --card: #ffffff;
+  --card-foreground: #1a1a1a;
+  --popover: #ffffff;
+  --popover-foreground: #1a1a1a;
+  --primary: #0b6e4f;
+  --primary-foreground: #ffffff;
+  --secondary: #edf0f3;
+  --secondary-foreground: #1a1a1a;
+  --muted: #edf0f3;
+  --muted-foreground: #4a4a4a;
+  --accent: #edf0f3;
+  --accent-foreground: #1a1a1a;
+  --destructive: #c73a3a;
+  --border: #e4e7eb;
+  --input: #e4e7eb;
+  --ring: #0b6e4f;
+  --chart-1: #0b6e4f;
+  --chart-2: #d4a72c;
+  --chart-3: #0369a1;
+  --chart-4: #6d28d9;
+  --chart-5: #c73a3a;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #1a1a1a;
+  --sidebar-primary: #0b6e4f;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #edf0f3;
+  --sidebar-accent-foreground: #1a1a1a;
+  --sidebar-border: #e4e7eb;
+  --sidebar-ring: #0b6e4f;
+}
+
+/* --------------------------------------------------------------------- dark */
+.dark {
+  color-scheme: dark;
+
+  --brand: #10b981;
+  --brand-hover: #059669;
+  --brand-text: #34d399;
+  --gold: #d4a72c;
+  --gold-text: #e5c15c;
+  --profit: #0f9d58;
+  --loss: #e05c5c;
+
+  /* The original TradePulse dark palette, verbatim */
+  --tp-z950: #09090b;
+  --tp-z900: #18181b;
+  --tp-z800: #27272a;
+  --tp-z700: #3f3f46;
+  --tp-z600: #52525b;
+  --tp-z500: #71717a;
+  --tp-z400: #a1a1aa;
+  --tp-z300: #d4d4d8;
+  --tp-z200: #e4e4e7;
+  --tp-z100: #f4f4f5;
+  --tp-z50: #fafafa;
+
+  --tp-emerald-300: #6ee7b7;
+  --tp-emerald-400: #34d399;
+  --tp-red-400: #f87171;
+  --tp-amber-300: #fcd34d;
+  --tp-sky-300: #7dd3fc;
+  --tp-violet-300: #c4b5fd;
+
+  --tp-chart-grid: #27272a;
+  --tp-chart-axis: #71717a;
+  --tp-chart-sma20: #d4a72c;
+  --tp-chart-sma50: #71717a;
+
+  /* shadcn primitives (original dark values) */
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}

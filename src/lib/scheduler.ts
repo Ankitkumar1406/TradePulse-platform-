@@ -1,0 +1,131 @@
+/**
+ * In-process scheduler:
+ *  - daily EOD auto-update at 16:00 IST Mon–Fri (IST = UTC+5:30, no DST)
+ *  - boot catch-up (server restarted after the 4 pm mark with stale data)
+ *  - hourly autopay renewal pass
+ *
+ * Pure helpers are exported for unit tests; the live timer is idempotent and
+ * stored on globalThis so hot reloads don't stack timers.
+ */
+
+import { db } from "@/lib/db";
+import { startSync } from "@/lib/sync";
+import { processDueRenewals } from "@/lib/payments";
+
+const IST_OFFSET_MIN = 330; // UTC+5:30
+const FIRE_UTC_H = 10; // 16:00 IST == 10:30 UTC
+const FIRE_UTC_M = 30;
+
+interface SchedulerGlobals {
+  __tpDailyTimer?: ReturnType<typeof setTimeout>;
+  __tpDailyTarget?: Date;
+  __tpSchedulerLive?: boolean;
+}
+const g = globalThis as unknown as SchedulerGlobals;
+
+function isWeekend(d: Date): boolean {
+  const day = d.getUTCDay();
+  return day === 0 || day === 6;
+}
+
+/** Next Mon–Fri 16:00 IST fire time (UTC instant), strictly after `now`. */
+export function nextRunAt(now: Date = new Date()): Date {
+  const candidate = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), FIRE_UTC_H, FIRE_UTC_M, 0, 0)
+  );
+  if (candidate.getTime() <= now.getTime() || isWeekend(candidate)) {
+    candidate.setUTCDate(candidate.getUTCDate() + 1);
+    candidate.setUTCHours(FIRE_UTC_H, FIRE_UTC_M, 0, 0);
+  }
+  while (isWeekend(candidate)) {
+    candidate.setUTCDate(candidate.getUTCDate() + 1);
+  }
+  return candidate;
+}
+
+/** Most recent Mon–Fri 16:00 IST boundary at or before `now`. */
+export function lastRunBoundary(now: Date = new Date()): Date {
+  const candidate = new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), FIRE_UTC_H, FIRE_UTC_M, 0, 0)
+  );
+  if (candidate.getTime() > now.getTime()) {
+    candidate.setUTCDate(candidate.getUTCDate() - 1);
+  }
+  while (isWeekend(candidate)) {
+    candidate.setUTCDate(candidate.getUTCDate() - 1);
+  }
+  return candidate;
+}
+
+/**
+ * Catch-up predicate: a daily update is owed when the last successful quote
+ * snapshot predates the most recent 4 pm boundary AND no sync has started
+ * after that boundary.
+ */
+export function shouldCatchUp(now: Date, lastQuoteTime: Date | null, startedAt: Date | null): boolean {
+  const boundary = lastRunBoundary(now);
+  if (!lastQuoteTime || lastQuoteTime.getTime() >= boundary.getTime()) return false;
+  if (!startedAt) return false;
+  return startedAt.getTime() < boundary.getTime();
+}
+
+/** The armed auto-update time (ISO) or null when the scheduler is off. */
+export function nextAutoUpdateIso(): string | null {
+  return g.__tpSchedulerLive && g.__tpDailyTarget ? g.__tpDailyTarget.toISOString() : null;
+}
+
+function arm(next?: Date) {
+  const target = next ?? nextRunAt();
+  const delay = Math.max(1000, target.getTime() - Date.now());
+  g.__tpDailyTarget = target;
+  g.__tpDailyTimer = setTimeout(() => {
+    void (async () => {
+      try {
+        console.log(`[scheduler] firing daily EOD sync at ${new Date().toISOString()}`);
+        await startSync("daily");
+        await processDueRenewals().catch(() => {});
+      } catch (e) {
+        console.error("[scheduler] daily fire failed:", e instanceof Error ? e.message : e);
+      } finally {
+        arm(); // always re-arm for the next trading day
+      }
+    })();
+  }, delay);
+  console.log(`[scheduler] next EOD auto-update at ${target.toISOString()} (4:00 pm IST, Mon-Fri)`);
+}
+
+/** Start the scheduler exactly once per server process. */
+export function startDailySyncScheduler() {
+  if (g.__tpSchedulerLive) return;
+  g.__tpSchedulerLive = true;
+
+  arm();
+
+  // Hourly autopay renewal pass
+  setInterval(() => {
+    void processDueRenewals().catch(() => {});
+  }, 3600 * 1000);
+
+  // Boot: renewal pass + catch-up check after a short warm-up
+  setTimeout(() => {
+    void processDueRenewals().catch(() => {});
+    void (async () => {
+      try {
+        const stockCount = await db.stock.count();
+        if (stockCount === 0) return; // GET /api/sync owns the initial full sync
+        const [agg, state] = await Promise.all([
+          db.stock.aggregate({ _max: { quoteTime: true } }),
+          db.syncState.findUnique({ where: { id: "main" } }),
+        ]);
+        if (shouldCatchUp(new Date(), agg._max.quoteTime, state?.startedAt ?? null)) {
+          console.log("[scheduler] catch-up daily update owed — firing now");
+          await startSync("daily");
+        } else {
+          console.log("[scheduler] data already covers the last 4:00 pm IST mark — no catch-up needed");
+        }
+      } catch (e) {
+        console.error("[scheduler] catch-up check failed:", e instanceof Error ? e.message : e);
+      }
+    })();
+  }, 20_000);
+}

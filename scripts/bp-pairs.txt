@@ -1,0 +1,181 @@
+2/3 Wheelers -> Automobiles
+Abrasives & Bearings -> Industrial Products
+Advertising & Media Agencies -> Media
+Aerospace & Defense -> Aerospace & Defense
+Airline -> Transport Services
+Airport & Airport services -> Transport Infrastructure
+Aluminium -> Non - Ferrous Metals
+Aluminium, Copper & Zinc Products -> Industrial Products
+Amusement Parks/ Other Recreation -> Leisure Services
+Animal Feed -> Food Products
+Asset Management Company -> Capital Markets
+Auto Components & Equipments -> Auto Components
+Auto Dealer -> Automobiles
+Biotechnology -> Pharmaceuticals & Biotechnology
+Breweries & Distilleries -> Beverages
+Business Process Outsourcing (BPO)/ Knowledge Process Outsourcing (KPO) -> Commercial Services & Supplies
+Cables - Electricals -> Industrial Products
+Carbon Black -> Chemicals & Petrochemicals
+Castings & Forgings -> Industrial Products
+Cement & Cement Products -> Cement & Cement Products
+Ceramics -> Consumer Durables
+Cigarettes & Tobacco Products -> Cigarettes & Tobacco Products
+Civil Construction -> Construction
+Coal -> Consumable Fuels
+Commercial Vehicles -> Agricultural, Commercial & Construction Vehicles
+Commodity Chemicals -> Chemicals & Petrochemicals
+Compressors, Pumps & Diesel Engines -> Industrial Products
+Computers - Software & Consulting -> IT - Software
+Computers Hardware & Equipments -> IT - Hardware
+Construction Vehicles -> Agricultural, Commercial & Construction Vehicles
+Consulting Services -> Commercial Services & Supplies
+Consumer Electronics -> Consumer Durables
+Copper -> Non - Ferrous Metals
+Dairy Products -> Food Products
+Dealers-Commercial Vehicles, Tractors, Construction Vehicles -> Agricultural, Commercial & Construction Vehicles
+Depositories, Clearing Houses and Other Intermediaries -> Capital Markets
+Digital Entertainment -> Entertainment
+Diversified -> Diversified
+Diversified Commercial Services -> Commercial Services & Supplies
+Diversified FMCG -> Diversified FMCG
+Diversified Metals -> Diversified Metals
+Diversified Retail -> Retailing
+Diversified consumer products -> Consumer Durables
+Dredging -> Engineering Services
+Dyes And Pigments -> Chemicals & Petrochemicals
+E-Learning -> Other Consumer Services
+E-Retail/ E-Commerce -> Retailing
+Edible Oil -> Agricultural Food & other Products
+Education -> Other Consumer Services
+Electrodes & Refractories -> Industrial Products
+Exchange and Data Platform -> Capital Markets
+Explosives -> Chemicals & Petrochemicals
+Ferro & Silica Manganese -> Ferrous Metals
+Fertilizers -> Fertilizers & Agrochemicals
+Film Production, Distribution & Exhibition -> Entertainment
+Financial Institution -> Finance
+Financial Products Distributor -> Capital Markets
+Financial Technology (Fintech) -> Financial Technology (Fintech)
+Footwear -> Consumer Durables
+Furniture, Home Furnishing -> Consumer Durables
+Garments & Apparels -> Textiles & Apparels
+Gas Transmission/Marketing -> Gas
+Gems, Jewellery And Watches -> Consumer Durables
+General Insurance -> Insurance
+Glass - Consumer -> Consumer Durables
+Glass - Industrial -> Industrial Products
+Granites & Marbles -> Consumer Durables
+Healthcare Research, Analytics & Technology -> Healthcare Services
+Healthcare Service Provider -> Healthcare Services
+Heavy Electrical Equipment -> Electrical Equipment
+Holding Company -> Finance
+Hospital -> Healthcare Services
+Hotels & Resorts -> Leisure Services
+Household Appliances -> Consumer Durables
+Household Products -> Household Products
+Houseware -> Consumer Durables
+Housing Finance Company -> Finance
+IT Enabled Services -> IT - Services
+Industrial Gases -> Chemicals & Petrochemicals
+Industrial Machinery -> Industrial Manufacturing
+Industrial Minerals -> Minerals & Mining
+Industrial Products -> Industrial Manufacturing
+Insurance Distributors -> Insurance
+Integrated Power Utilities -> Power
+Internet & Catalogue Retail -> Retailing
+Investment Company -> Finance
+Iron & Steel -> Ferrous Metals
+Iron & Steel Products -> Industrial Products
+Jute & Jute Products -> Paper, Forest & Jute Products
+LPG/CNG/PNG/LNG Supplier -> Gas
+Leather And Leather Products -> Consumer Durables
+Life Insurance -> Insurance
+Logistics Solution Provider -> Transport Services
+Lubricants -> Petroleum Products
+Meat Products including Poultry -> Food Products
+Media & Entertainment -> Entertainment
+Medical Equipment & Supplies -> Healthcare Equipment & Supplies
+Microfinance Institutions -> Finance
+Multi Utilities -> Other Utilities
+Non Banking Financial Company (NBFC) -> Finance
+Offshore Support Solution Drilling -> Oil
+Oil Equipment & Services -> Oil
+Oil Exploration & Production -> Oil
+Oil Storage & Transportation -> Oil
+Other Agricultural Products -> Agricultural Food & other Products
+Other Bank -> Banks
+Other Beverages -> Beverages
+Other Capital Market related Services -> Capital Markets
+Other Construction Materials -> Other Construction Materials
+Other Consumer Services -> Other Consumer Services
+Other Electrical Equipment -> Electrical Equipment
+Other Financial Services -> Finance
+Other Food Products -> Food Products
+Other Industrial Products -> Industrial Products
+Other Telecom Services -> Telecom - Services
+Other Textile Products -> Textiles & Apparels
+Packaged Foods -> Food Products
+Packaging -> Industrial Products
+Paints -> Consumer Durables
+Paper & Paper Products -> Paper, Forest & Jute Products
+Passenger Cars & Utility Vehicles -> Automobiles
+Personal Care -> Personal Products
+Pesticides & Agrochemicals -> Fertilizers & Agrochemicals
+Petrochemicals -> Chemicals & Petrochemicals
+Pharmaceuticals -> Pharmaceuticals & Biotechnology
+Pharmacy Retail -> Retailing
+Pig Iron -> Ferrous Metals
+Plastic Products - Consumer -> Consumer Durables
+Plastic Products - Industrial -> Industrial Products
+Plywood Boards/ Laminates -> Consumer Durables
+Port & Port services -> Transport Infrastructure
+Power - Transmission -> Power
+Power Distribution -> Power
+Power Generation -> Power
+Power Trading -> Power
+Precious Metals -> Non - Ferrous Metals
+Print Media -> Media
+Printing & Publication -> Printing & Publication
+Printing Inks -> Chemicals & Petrochemicals
+Private Sector Bank -> Banks
+Public Sector Bank -> Banks
+Railway Wagons -> Industrial Manufacturing
+Ratings -> Capital Markets
+Refineries & Marketing -> Petroleum Products
+Residential, Commercial Projects -> Realty
+Restaurants -> Leisure Services
+Road AssetsToll, Annuity, Hybrid-Annuity -> Transport Infrastructure
+Road Transport -> Transport Services
+Rubber -> Industrial Products
+Sanitary Ware -> Consumer Durables
+Seafood -> Food Products
+Ship Building & Allied Services -> Industrial Manufacturing
+Shipping -> Transport Services
+Software Products -> IT - Software
+Speciality Retail -> Retailing
+Specialty Chemicals -> Chemicals & Petrochemicals
+Sponge Iron -> Ferrous Metals
+Stationary -> Household Products
+Stockbroking & Allied -> Capital Markets
+Sugar -> Agricultural Food & other Products
+TV Broadcasting & Software Production -> Entertainment
+Tea & Coffee -> Agricultural Food & other Products
+Telecom -  Equipment & Accessories -> Telecom -  Equipment & Accessories
+Telecom - Cellular & Fixed line services -> Telecom - Services
+Telecom - Infrastructure -> Telecom - Services
+Tour, Travel Related Services -> Leisure Services
+Tractors -> Agricultural, Commercial & Construction Vehicles
+Trading & Distributors -> Commercial Services & Supplies
+Trading - Auto components -> Auto Components
+Trading - Chemicals -> Chemicals & Petrochemicals
+Trading - Gas -> Gas
+Trading - Metals -> Metals & Minerals Trading
+Trading - Minerals -> Metals & Minerals Trading
+Trading - Textile Products -> Textiles & Apparels
+Transport Related Services -> Transport Services
+Tyres & Rubber Products -> Auto Components
+Waste Management -> Other Utilities
+Water Supply & Management -> Other Utilities
+Web based media and service -> Media
+Wellness -> Leisure Services
+Zinc -> Non - Ferrous Metals
