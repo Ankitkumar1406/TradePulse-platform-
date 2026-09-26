@@ -21,12 +21,13 @@ interface ScanColumn { key: string; label: string; type: string }
 interface ScanRow {
   symbol: string; name: string; price: number | null; changePct: number | null;
   marketCap: number | null; sector: string | null; rs?: number | null;
+  epsScore?: number | null; adRating?: string | null; epsChgYoy?: number | null;
   mom1M?: number | null; mom3M?: number | null; mom6M?: number | null;
   metrics: Record<string, number | string | null>;
 }
 interface ScanResult { columns: ScanColumn[]; rows: ScanRow[]; scanned: number }
 
-const TOTAL_SCANS = 38;
+const TOTAL_SCANS = 39;
 const TOTAL_CATEGORIES = 8;
 
 /** How many chart tiles the Charts view shows before the "View more charts" button. */
@@ -65,11 +66,13 @@ const RS_OPTIONS = [
 ];
 
 const EMA_OPTIONS = [
-  { v: "default", label: "MA 20 (default)" },
-  { v: "set", label: "MA 5/10/20/60" },
+  { v: "20", label: "EMA 20 (default)" },
+  { v: "10", label: "EMA 10" },
   { v: "50", label: "EMA 50" },
   { v: "100", label: "EMA 100" },
   { v: "200", label: "EMA 200" },
+  { v: "default", label: "MA 20" },
+  { v: "set", label: "MA 5/10/20/60" },
   { v: "none", label: "No moving average" },
 ];
 
@@ -85,6 +88,8 @@ type IndicatorKey = (typeof INDICATOR_OPTIONS)[number]["key"];
 const SORT_KEYS = [
   { v: "scan", label: "Sort: scan order" },
   { v: "rs", label: "RS ↓" },
+  { v: "eps", label: "EPS score ↓" },
+  { v: "epsChg", label: "EPS chg % ↓" },
   { v: "chg", label: "Change % ↓" },
   { v: "chgAsc", label: "Change % ↑" },
   { v: "mcap", label: "Market cap ↓" },
@@ -99,6 +104,8 @@ function sortScanRows(rows: ScanRow[], key: SortKey): ScanRow[] {
   const metric = (r: ScanRow): number | null => {
     switch (key) {
       case "rs": return r.rs ?? null;
+      case "eps": return r.epsScore ?? null;
+      case "epsChg": return r.epsChgYoy ?? null;
       case "chg": case "chgAsc": return r.changePct ?? null;
       case "mcap": return r.marketCap ?? null;
       case "m1": return r.mom1M ?? null;
@@ -137,9 +144,9 @@ export function ScannersTab({ isPro, onSelectStock, onUpgrade }: { isPro: boolea
   const [activeScan, setActiveScan] = useState<ScanMeta | null>(null);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [view, setView] = useState<"list" | "charts">("list");
-  // Default chart = candles + 20 MA + Volume + base overlay; MACD / Bollinger / RSI opt-in.
+  // Default chart = candles + EMA 20 + Volume + base overlay; MACD / Bollinger / RSI opt-in.
   const [filters, setFilters] = useState<ChartFilters>({
-    tf: "day", ema: "default", base: true, rsMin: 0, indicators: { vol: true, macd: false, boll: false, rsi: false },
+    tf: "day", ema: 20, base: true, rsMin: 0, indicators: { vol: true, macd: false, boll: false, rsi: false },
   });
 
   // load catalog once
@@ -356,7 +363,7 @@ function ChartSettingsPopover({
                   </label>
                 ))}
               </div>
-              <div className="mt-1 text-[9px] leading-3 text-zinc-600">Default: Volume (in-pane) · 20 MA · Base overlay</div>
+              <div className="mt-1 text-[9px] leading-3 text-zinc-600">Default: Volume (in-pane) · EMA 20 · Base overlay</div>
             </div>
             <FilterSelect label="Base overlay" value={filters.base ? "on" : "off"} onChange={(v) => setFilters((f) => ({ ...f, base: v === "on" }))}>
               <option value="on">On</option>
@@ -450,7 +457,10 @@ function ScanTable({ result, onSelectStock }: { result: ScanResult; onSelectStoc
                   <th className="px-4 py-2.5 font-medium">Stock</th>
                   <th className="px-3 py-2.5 text-right font-medium">Price</th>
                   <th className="px-3 py-2.5 text-right font-medium">Chg %</th>
-                  <th className="px-3 py-2.5 text-right font-medium">RS</th>
+                  <th className="px-3 py-2.5 text-right font-medium" title="RS rating — 12M weighted price-performance percentile (1-99)">RS</th>
+                  <th className="px-3 py-2.5 text-right font-medium" title="EPS score — quarterly EPS growth, 3-year earnings growth and revenue momentum percentile (1-99)">EPS</th>
+                  <th className="px-3 py-2.5 text-right font-medium" title="EPS change % — latest quarter diluted EPS vs the year-ago quarter">EPS Chg</th>
+                  <th className="px-3 py-2.5 text-right font-medium" title="A/D rating — 13-week accumulation vs distribution volume (A+ strongest)">AD</th>
                   {result.columns.map((c) => (
                     <th key={c.key} className="px-3 py-2.5 text-right font-medium">{c.label}</th>
                   ))}
@@ -472,7 +482,18 @@ function ScanTable({ result, onSelectStock }: { result: ScanResult; onSelectStoc
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono text-xs text-zinc-200">{fmtPrice(r.price)}</td>
                     <td className={cn("px-3 py-2.5 text-right font-mono text-xs", changeColor(r.changePct))}>{fmtPct(r.changePct)}</td>
-                    <td className="px-3 py-2.5 text-right font-mono text-xs text-zinc-400">{r.rs != null ? r.rs : "—"}</td>
+                    <td className="px-3 py-2.5 text-right font-mono text-xs text-zinc-400" title="RS rating (1-99)">{r.rs != null ? r.rs : "—"}</td>
+                    <td className="px-3 py-2.5 text-right font-mono text-xs text-zinc-400" title="EPS score (1-99)">{r.epsScore != null ? r.epsScore : "—"}</td>
+                    <td className={cn("px-3 py-2.5 text-right font-mono text-xs", r.epsChgYoy != null ? (r.epsChgYoy >= 0 ? "text-profit" : "text-loss") : "text-zinc-600")} title="Latest quarterly EPS growth YoY %">
+                      {r.epsChgYoy != null ? `${r.epsChgYoy > 0 ? "+" : ""}${r.epsChgYoy.toFixed(1)}%` : "—"}
+                    </td>
+                    <td className="px-3 py-2.5 text-right font-mono text-xs text-zinc-400" title="Accumulation/Distribution rating">
+                      {r.adRating != null ? (
+                        <span className={cn("rounded px-1 py-0.5 text-[10px] font-semibold", r.adRating.startsWith("A") ? "bg-emerald-500/15 text-emerald-400" : r.adRating.startsWith("B") ? "bg-lime-500/10 text-lime-400" : r.adRating.startsWith("C") ? "bg-amber-500/10 text-amber-400" : "bg-red-500/10 text-red-400")}>
+                          {r.adRating}
+                        </span>
+                      ) : "—"}
+                    </td>
                     {result.columns.map((c) => (
                       <td key={c.key} className="px-3 py-2.5 text-right font-mono text-xs text-zinc-300">
                         {metricText(r.metrics[c.key] ?? null, c.type)}
@@ -551,7 +572,7 @@ function ChartCard({
             <span />
           )}
           <span className="flex shrink-0 items-center gap-1.5">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">RS score</span>
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">RS · EPS · AD</span>
             {row.rs != null ? (
               <span
                 className={cn(
@@ -559,7 +580,31 @@ function ChartCard({
                   row.rs >= 80 ? "bg-brand/15 text-brand-text" : row.rs >= 50 ? "bg-zinc-800 text-zinc-300" : "bg-zinc-800/60 text-zinc-500"
                 )}
               >
-                RS {row.rs}
+                {row.rs}
+              </span>
+            ) : (
+              <span className="text-[11px] text-zinc-500">—</span>
+            )}
+            {row.epsScore != null ? (
+              <span
+                className={cn(
+                  "rounded px-1.5 py-0.5 text-[11px] font-bold",
+                  row.epsScore >= 80 ? "bg-sky-500/15 text-sky-300" : row.epsScore >= 50 ? "bg-zinc-800 text-zinc-300" : "bg-zinc-800/60 text-zinc-500"
+                )}
+              >
+                {row.epsScore}
+              </span>
+            ) : (
+              <span className="text-[11px] text-zinc-500">—</span>
+            )}
+            {row.adRating != null ? (
+              <span
+                className={cn(
+                  "rounded px-1.5 py-0.5 text-[11px] font-bold",
+                  row.adRating.startsWith("A") ? "bg-emerald-500/15 text-emerald-400" : row.adRating.startsWith("B") ? "bg-lime-500/10 text-lime-400" : "bg-zinc-800/60 text-zinc-500"
+                )}
+              >
+                {row.adRating}
               </span>
             ) : (
               <span className="text-[11px] text-zinc-500">—</span>

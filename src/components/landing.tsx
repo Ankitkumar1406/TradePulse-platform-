@@ -260,9 +260,9 @@ const SCREENS: {
   {
     slug: "scanners",
     eyebrow: "Scanners",
-    title: "38 one-click scanners, sortable two-up charts",
-    text: "Pick a scan, hit run, and every NSE stock that matches appears as a clean candlestick tile — two charts per row, never a wall of noise. Each card shows the consolidation base with its formation duration and the universal RS score; re-sort the whole output by RS, change %, market cap or recent performance, and star any stock straight into your watchlist.",
-    points: ["List & Charts views — sort by RS, change %, mcap, 1M/3M/6M", "Base overlay with formation duration on each tile", "RS score & one-tap watchlist star on every row and tile"],
+    title: "39 one-click scanners with RS, EPS score & A/D rating",
+    text: "Pick a scan, hit run, and every NSE stock that matches appears as a clean candlestick tile — two charts per row, never a wall of noise. Each result carries its RS rating, EPS score, EPS change % and A/D rating (MarketSmith-style), plus the consolidation base overlay; re-sort by any of them, and star any stock straight into your watchlist.",
+    points: ["RS · EPS score · A/D rating on every scan output", "Base overlay with formation duration on each tile", "Sort by RS, EPS score, change %, mcap or 1M/3M/6M"],
   },
   {
     slug: "screener",

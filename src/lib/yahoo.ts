@@ -323,6 +323,92 @@ export async function fetchEarningsDate(symbol: string): Promise<Date | null> {
   }
 }
 
+// ---------------------------------------------------------------- financials
+
+export interface QuarterlyFinancials {
+  /** Latest quarter diluted EPS vs the year-ago quarter (decimal, 0.35 = +35%). */
+  epsQuarterlyGrowth: number | null;
+  /** Latest quarter totalRevenue vs the prior quarter (decimal). */
+  revenueQoQGrowth: number | null;
+  /** 3-year net-income CAGR from the annual income statement (decimal). */
+  netIncome3YCagr: number | null;
+}
+
+interface IncomeStmt {
+  totalRevenue?: { raw?: number } | null;
+  netIncome?: { raw?: number } | null;
+}
+
+/**
+ * Quarterly/annual financials for the EPS score and Trader Choice 7 — one
+ * quoteSummary call with the three modules we need. Missing data resolves to
+ * null per field (Yahoo omits whole statements for some listed names).
+ */
+export async function fetchFinancials(symbol: string): Promise<QuarterlyFinancials | null> {
+  try {
+    const d = await yahooFetch<{
+      quoteSummary: {
+        result: {
+          defaultKeyStatistics?: { earningsQuarterlyGrowth?: unknown };
+          incomeStatementHistory?: { incomeStatementHistory?: IncomeStmt[] };
+          incomeStatementHistoryQuarterly?: { incomeStatementHistory?: IncomeStmt[] };
+        }[];
+      };
+    }>({
+      url: `${QUERY2}/v10/finance/quoteSummary/${encodeURIComponent(symbol)}`,
+      query: { modules: "defaultKeyStatistics,incomeStatementHistory,incomeStatementHistoryQuarterly" },
+      timeoutMs: 20000,
+      retries: 1,
+    });
+    const r = d.quoteSummary?.result?.[0];
+    if (!r) return null;
+
+    /** Yahoo quoteSummary returns numbers either as plain numbers or as
+     *  { raw: number, fmt: string } — normalise both to a number. */
+    const rawOf = (v: unknown): number | null => {
+      if (typeof v === "number") return Number.isFinite(v) ? v : null;
+      if (v && typeof v === "object" && typeof (v as { raw?: unknown }).raw === "number") {
+        const n = (v as { raw: number }).raw;
+        return Number.isFinite(n) ? n : null;
+      }
+      return null;
+    };
+
+    // EPS diluted growth YoY — Yahoo's own precomputed field, else derive it
+    // from the quarterly net-income series (best-effort fallback).
+    let epsQ: number | null = rawOf(r.defaultKeyStatistics?.earningsQuarterlyGrowth);
+    const qStmts = r.incomeStatementHistoryQuarterly?.incomeStatementHistory ?? [];
+    if (epsQ == null && qStmts.length >= 2) {
+      const ni0 = rawOf(qStmts[0]?.netIncome);
+      const ni1 = rawOf(qStmts[1]?.netIncome);
+      if (ni0 != null && ni1 != null && ni1 !== 0) epsQ = ni0 / Math.abs(ni1) - 1;
+    }
+
+    // Revenue QoQ — latest vs prior quarter (array is newest-first)
+    let revQoQ: number | null = null;
+    if (qStmts.length >= 2) {
+      const r0 = rawOf(qStmts[0]?.totalRevenue);
+      const r1 = rawOf(qStmts[1]?.totalRevenue);
+      if (r0 != null && r1 != null && r1 !== 0) revQoQ = r0 / r1 - 1;
+    }
+
+    // 3-year net income CAGR — needs the annual statement with ≥4 years
+    let cagr: number | null = null;
+    const aStmts = r.incomeStatementHistory?.incomeStatementHistory ?? [];
+    if (aStmts.length >= 4) {
+      const latest = rawOf(aStmts[0]?.netIncome);
+      const oldest = rawOf(aStmts[3]?.netIncome);
+      if (latest != null && oldest != null && oldest > 0 && latest > 0) {
+        cagr = Math.pow(latest / oldest, 1 / 3) - 1;
+      }
+    }
+
+    return { epsQuarterlyGrowth: epsQ, revenueQoQGrowth: revQoQ, netIncome3YCagr: cagr };
+  } catch {
+    return null;
+  }
+}
+
 export interface IndexQuote {
   symbol: string;
   name: string;

@@ -11,8 +11,9 @@ import { db } from "@/lib/db";
 import { fetchUniversePage, fetchSpark, type ScreenerQuote, type SparkPoint } from "@/lib/yahoo";
 import { computeIndicators, computeExtendedIndicators } from "@/lib/indicators";
 import { evaluateAlerts } from "@/lib/alerts";
-import { startSectorTrickle, startBarsTrickle, startEarningsTrickle } from "@/lib/trickle";
+import { startSectorTrickle, startBarsTrickle, startEarningsTrickle, startFinancialsTrickle } from "@/lib/trickle";
 import { nextAutoUpdateIso } from "@/lib/scheduler";
+import { recomputeRatings } from "@/lib/ratings";
 
 export const STALE_DATA_MS = 20 * 3600 * 1000;
 
@@ -64,6 +65,9 @@ async function runSync(mode: SyncMode) {
     startSectorTrickle();
     startBarsTrickle();
     startEarningsTrickle();
+    startFinancialsTrickle();
+    // MarketSmith-style ratings (RS / EPS score / A-D) — background recompute
+    void recomputeRatings();
 
     await evaluateAlerts();
   } catch (e) {
@@ -113,7 +117,10 @@ async function upsertQuotes(quotes: ScreenerQuote[]) {
       dayLow: q.regularMarketDayLow ?? null,
       volume: q.regularMarketVolume ?? null,
       avgVol3M: q.averageDailyVolume3Month ?? null,
-      marketCap: q.marketCap ?? null,
+      // marketCap is null-PRESERVING: Yahoo omits the field outright for a handful
+      // of listed names (e.g. ARTEMISMED.NS — absent on both .NS and .BO), so a
+      // blind `?? null` would wipe a good value on every sync cycle.
+      ...(q.marketCap != null ? { marketCap: q.marketCap } : {}),
       peTTM: q.trailingPE ?? null,
       epsTTM: q.epsTrailingTwelveMonths ?? null,
       bookValue: q.bookValue ?? null,
@@ -262,6 +269,9 @@ export async function getSyncStatus() {
     barsDone: state?.barsDone ?? 0,
     earningsTotal: state?.earningsTotal ?? 0,
     earningsDone: state?.earningsDone ?? 0,
+    financialsTotal: state?.financialsTotal ?? 0,
+    financialsDone: state?.financialsDone ?? 0,
+    ratingsSynced: state?.ratingsSynced ? state.ratingsSynced.toISOString() : null,
     lastError: state?.lastError ?? null,
     stockCount,
     lastQuoteTime: lastQuote._max.quoteTime ? lastQuote._max.quoteTime.toISOString() : null,

@@ -64,10 +64,20 @@ interface CondRow {
   logic: "and" | "or"; // how this row joins the PREVIOUS one (first row ignores it)
   maType?: "sma" | "ema"; // only for the "ma" pseudo-field (price vs moving average)
   len?: 20 | 50 | 100 | 200; // only for the "ma" pseudo-field
+  tf?: "d" | "w"; // timeframe for the price/OHLC family — Daily candle or the current Weekly candle
 }
 
+/** Price/OHLC fields that support a per-row Daily/Weekly timeframe. */
+const OHLC_FIELDS = new Set(["price", "open", "dayHigh", "dayLow"]);
+/** Daily candle key → the matching current-week candle column. */
+const WEEKLY_KEY: Record<string, string> = { price: "wClose", open: "wOpen", dayHigh: "wHigh", dayLow: "wLow" };
+const WEEKLY_TO_DAILY: Record<string, string> = { wClose: "price", wOpen: "open", wHigh: "dayHigh", wLow: "dayLow" };
+
 const NUM_FIELDS: { f: string; label: string; step: number; scale?: number }[] = [
-  { f: "price", label: "Price (₹)", step: 1 },
+  { f: "price", label: "Price / Close (₹)", step: 1 },
+  { f: "open", label: "Open (₹)", step: 1 },
+  { f: "dayHigh", label: "Day high (₹)", step: 1 },
+  { f: "dayLow", label: "Day low (₹)", step: 1 },
   { f: "changePct", label: "Day change %", step: 0.5 },
   { f: "volume", label: "Volume (shares)", step: 100000 },
   { f: "avgVol3M", label: "Avg volume (3M)", step: 100000 },
@@ -221,7 +231,7 @@ function ScreenerUpgradePanel({ onUpgrade }: { onUpgrade?: () => void }) {
       </span>
       <h2 className="mt-4 text-lg font-bold tracking-tight text-zinc-50">The Screener is part of TradePulse Pro</h2>
       <p className="mx-auto mt-2 max-w-md text-xs leading-relaxed text-zinc-500">
-        Screen all 3,545 NSE stocks with the multi-condition builder, run several scans together for
+        Screen all 3,551 NSE stocks with the multi-condition builder, run several scans together for
         confluence, save your screens and export the results.
       </p>
       <ul className="mx-auto mt-5 max-w-sm space-y-1.5 text-left text-xs text-zinc-400">
@@ -266,11 +276,13 @@ const toPayload = (r: CondRow) => {
   const scale = r.f === "ma" ? 1 : NUM_FIELDS.find((x) => x.f === r.f)?.scale ?? 1;
   const num = (raw: string) => (Number.isFinite(Number(raw)) ? Number(raw) * scale : raw);
   if (r.f === "ma") return { f: maFieldKey(r.maType ?? "sma", r.len ?? 50), op: r.op, v: num(r.v), v2: num(r.v2), ...logic };
-  return { f: r.f, op: r.op, v: num(r.v), v2: num(r.v2), ...logic };
+  // Weekly timeframe on the price/OHLC family swaps in the current-week candle column
+  const f = r.tf === "w" && OHLC_FIELDS.has(r.f) ? WEEKLY_KEY[r.f] : r.f;
+  return { f, op: r.op, v: num(r.v), v2: num(r.v2), ...logic };
 };
 
 let condSeq = 1;
-const newCondRow = (): CondRow => ({ id: condSeq++, f: "price", op: "gt", v: "", v2: "", bool: false, boolVal: true, logic: "and" });
+const newCondRow = (): CondRow => ({ id: condSeq++, f: "price", op: "gt", v: "", v2: "", bool: false, boolVal: true, logic: "and", tf: "d" });
 
 export function ScreenerTab({
   onSelectStock,
@@ -520,21 +532,24 @@ export function ScreenerTab({
         // the AND/OR connector.
         const toEditorRow = (raw: { f?: string; op?: string; v?: unknown; v2?: unknown; logic?: unknown }): CondRow => {
           const isBool = raw.op === "eq" && BOOL_FIELDS.some((b) => b.f === raw.f);
+          // weekly OHLC wire keys fold back onto their daily field with tf="w"
+          const dailyF = raw.f != null && WEEKLY_TO_DAILY[raw.f] ? WEEKLY_TO_DAILY[raw.f] : raw.f;
           // undo the display scale (market cap is stored in INR, edited in ₹ Cr)
-          const scale = NUM_FIELDS.find((x) => x.f === raw.f)?.scale ?? 1;
+          const scale = NUM_FIELDS.find((x) => x.f === dailyF)?.scale ?? 1;
           const unscale = (val: unknown) => {
             const n = Number(val);
             return Number.isFinite(n) && scale !== 1 ? String(n / scale) : val != null ? String(val) : "";
           };
           return {
             id: condSeq++,
-            f: raw.f ?? "price",
+            f: dailyF ?? "price",
             op: isBool ? "eq" : (raw.op as CondOp) ?? "gt",
             v: isBool ? "" : unscale(raw.v),
             v2: raw.v2 != null ? unscale(raw.v2) : "",
             bool: isBool,
             boolVal: raw.v === true || raw.v === "true",
             logic: raw.logic === "or" ? "or" : "and",
+            tf: raw.f != null && WEEKLY_TO_DAILY[raw.f] ? "w" : "d",
           };
         };
         const restored = def.rows.map(toEditorRow);
@@ -576,7 +591,7 @@ export function ScreenerTab({
       {/* header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="text-[10px] font-semibold uppercase tracking-widest text-emerald-400">Screener · all 3,545 NSE stocks</div>
+          <div className="text-[10px] font-semibold uppercase tracking-widest text-emerald-400">Screener · all 3,551 NSE stocks</div>
           <h2 className="text-lg font-bold tracking-tight text-zinc-100">{headerCount}</h2>
         </div>
         <div className="flex items-center gap-2">
@@ -831,22 +846,34 @@ export function ScreenerTab({
                     aria-label="Condition field"
                   >
                     <optgroup label="Price & valuation">
-                      {NUM_FIELDS.slice(0, 8).map((f) => <option key={f.f} value={f.f}>{f.label}</option>)}
+                      {NUM_FIELDS.slice(0, 11).map((f) => <option key={f.f} value={f.f}>{f.label}</option>)}
                     </optgroup>
                     <optgroup label="Momentum & technicals (daily / weekly)">
-                      {NUM_FIELDS.slice(8, 18).map((f) => <option key={f.f} value={f.f}>{f.label}</option>)}
+                      {NUM_FIELDS.slice(11, 21).map((f) => <option key={f.f} value={f.f}>{f.label}</option>)}
                     </optgroup>
                     <optgroup label="Bollinger Bands (20, 2σ)">
-                      {NUM_FIELDS.slice(18, 20).map((f) => <option key={f.f} value={f.f}>{f.label}</option>)}
+                      {NUM_FIELDS.slice(21, 23).map((f) => <option key={f.f} value={f.f}>{f.label}</option>)}
                     </optgroup>
                     <optgroup label="Price vs moving average (SMA / EMA)">
                       <option value="ma">Custom MA — pick type & length</option>
-                      {NUM_FIELDS.slice(20).map((f) => <option key={f.f} value={f.f}>{f.label}</option>)}
+                      {NUM_FIELDS.slice(23).map((f) => <option key={f.f} value={f.f}>{f.label}</option>)}
                     </optgroup>
                     <optgroup label="Signal flags">
                       {BOOL_FIELDS.map((f) => <option key={f.f} value={f.f}>{f.label}</option>)}
                     </optgroup>
                   </select>
+                  {OHLC_FIELDS.has(row.f) && (
+                    <select
+                      value={row.tf ?? "d"}
+                      onChange={(e) => patchRow(row.id, { tf: e.target.value as "d" | "w" })}
+                      className="h-8 rounded-md border border-zinc-700 bg-zinc-900 px-1.5 text-xs text-zinc-200"
+                      aria-label="Timeframe"
+                      title="Timeframe of this price/OHLC condition — the daily candle or the current week's candle"
+                    >
+                      <option value="d">Daily</option>
+                      <option value="w">Weekly</option>
+                    </select>
+                  )}
                   {row.f === "ma" && (
                     <span className="flex items-center gap-1.5">
                       <select

@@ -331,7 +331,8 @@ export function CandleChart({
   // The canvas container only exists once bars arrive (until then the early-return
   // placeholder renders with no ref), so chart creation is gated on `ready`:
   // without it the init effect fires once against the placeholder and any card
-  // whose bars load after mount would stay blank forever.
+  // whose bars load after mount would stay blank forever. Data itself is applied
+  // synchronously in the effect below, so indicators never race the data.
   const ready = candles.length >= 5;
 
   // Create the chart once; rebuild indicators & styles per theme
@@ -355,6 +356,8 @@ export function CandleChart({
     chart.setOffsetRightDistance(70);
     ensureVolMainIndicator();
 
+    // The loader's sync callback means data lands in the chart store DURING
+    // setDataLoader — before the indicator effect below creates the overlays.
     const loader = {
       getBars: ({ type, period, callback }: { type: string; period: Period; callback: (data: KLineData[]) => void }) => {
         if (type === "forward" || type === "backward") {
@@ -417,7 +420,11 @@ export function CandleChart({
     return () => obs.disconnect();
   }, []);
 
-  // Sync indicator panes with toggles — and swap the MA overlay per maMode
+  // Sync indicator panes with toggles — and swap the MA overlay per maMode.
+  // `ready` is a dependency on purpose: when bars arrive asynchronously the
+  // chart is only created on the ready-flip, and this effect must re-run after
+  // that or the default MA/EMA (and volume) indicators never get created —
+  // the "line missing on first load" bug.
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -447,8 +454,12 @@ export function CandleChart({
           spec.name === "MA" && spec.calcParams.length === 1
             ? { lines: [{ color: readTheme().ma[2] }] }
             : undefined;
+        // isStack=true — klinecharts 10 wipes every other indicator in the
+        // pane when stacking is off, which silently deleted the EMA/MA (and
+        // the volume overlay) whenever a sibling candle-pane indicator was
+        // created after it. The MA/EMA line “missing on load” bug.
         const id =
-          chart.createIndicator({ name: spec.name, paneId: PANE_IDS.MA, calcParams: spec.calcParams, styles }) ?? undefined;
+          chart.createIndicator({ name: spec.name, paneId: PANE_IDS.MA, calcParams: spec.calcParams, styles }, true) ?? undefined;
         indicatorIdsRef.current.MA = id;
       }
     }
@@ -473,7 +484,9 @@ export function CandleChart({
       const existingSub = indicatorIdsRef.current[k];
       if (effPanes[k]) {
         if (!existingSub) {
-          const id = chart.createIndicator(opts[k]) ?? undefined;
+          // isStack=true — see the MA creation note above: without it each new
+          // candle-pane indicator (VOL/BOLL) wipes the ones created before it.
+          const id = chart.createIndicator(opts[k], true) ?? undefined;
           indicatorIdsRef.current[k] = id;
         }
         if (!SUB_PANE_KEYS.includes(k)) continue; // in-pane overlays take no extra height
@@ -484,7 +497,7 @@ export function CandleChart({
         delete indicatorIdsRef.current[k];
       }
     }
-  }, [panes, maMode, indicators, effPanes, styleEpoch, height]);
+  }, [panes, maMode, indicators, effPanes, styleEpoch, height, ready]);
 
   // Base overlay — dashed rectangle over the consolidation range
   useEffect(() => {

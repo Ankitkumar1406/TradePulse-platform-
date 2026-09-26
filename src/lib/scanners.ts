@@ -31,6 +31,10 @@ export interface ScanRow {
   sector: string | null;
   /** Universal RS rating (0-99 percentile of the 6-month return) — attached to every row for chart-grid filters. */
   rs?: number | null;
+  /** MarketSmith-style ratings attached to every row (Task 33). */
+  epsScore?: number | null; // 1-99 composite growth percentile
+  adRating?: string | null; // A+ … E accumulation/distribution grade
+  epsChgYoy?: number | null; // latest Q diluted EPS growth YoY, %
   // Trailing performance carried on every row so the results can be re-sorted client-side.
   mom1M?: number | null;
   mom3M?: number | null;
@@ -85,7 +89,7 @@ function buildRows(
   });
 }
 
-/** Wrap a raw run so every returned row also carries the universal RS rating. */
+/** Wrap a raw run so every returned row also carries the universal ratings (RS, EPS score, A/D, EPS chg %). */
 function withRs(run: () => Promise<ScanResult>): () => Promise<ScanResult> {
   return async () => {
     const result = await run();
@@ -123,12 +127,62 @@ async function rsRankMap(): Promise<Map<string, number>> {
   return map;
 }
 
+/**
+ * Universal per-stock extras — RS rating (6M percentile, live), plus the
+ * MarketSmith-style ratings stored on Stock rows by the ratings recompute
+ * (EPS score 1-99, A/D grade A+…E, quarterly EPS growth %). Cached ~15 min;
+ * every scan row carries them so all screener outputs show the same columns.
+ */
+interface UniversalRatings {
+  rs: Map<string, number>;
+  epsScore: Map<string, number>;
+  adRating: Map<string, string>;
+  epsChgYoy: Map<string, number>;
+}
+
+async function universalRatings(): Promise<UniversalRatings> {
+  const g = globalThis as unknown as { __tpUniversalRatings?: { at: number; u: UniversalRatings } };
+  const now = Date.now();
+  if (g.__tpUniversalRatings && now - g.__tpUniversalRatings.at < 15 * 60_000) return g.__tpUniversalRatings.u;
+
+  const [rsMap, rows] = await Promise.all([
+    rsRankMap(),
+    db.stock.findMany({
+      where: { price: { not: null } },
+      select: { symbol: true, rsRating: true, epsScore: true, adRating: true, epsQuarterlyGrowth: true },
+    }),
+  ]);
+  const u: UniversalRatings = {
+    rs: rsMap,
+    epsScore: new Map(),
+    adRating: new Map(),
+    epsChgYoy: new Map(),
+  };
+  for (const s of rows) {
+    // MarketSmith-style 12M weighted RS where the ratings recompute has it;
+    // fall back to the live 6M percentile otherwise.
+    const storedRs = s.rsRating ?? null;
+    if (storedRs != null) u.rs.set(s.symbol, storedRs);
+    if (s.epsScore != null) u.epsScore.set(s.symbol, s.epsScore);
+    if (s.adRating != null) u.adRating.set(s.symbol, s.adRating);
+    if (s.epsQuarterlyGrowth != null) u.epsChgYoy.set(s.symbol, Math.round(s.epsQuarterlyGrowth * 1000) / 10);
+  }
+  g.__tpUniversalRatings = { at: now, u };
+  return u;
+}
+
 async function attachRs<T extends { symbol: string }>(rows: T[]): Promise<T[]> {
   try {
-    const map = await rsRankMap();
-    for (const r of rows) (r as T & { rs?: number | null }).rs = map.get(r.symbol) ?? null;
+    const u = await universalRatings();
+    for (const r of rows) {
+      const x = r as T & { rs?: number | null; epsScore?: number | null; adRating?: string | null; epsChgYoy?: number | null };
+      x.rs = u.rs.get(r.symbol) ?? null;
+      x.epsScore = u.epsScore.get(r.symbol) ?? null;
+      x.adRating = u.adRating.get(r.symbol) ?? null;
+      x.epsChgYoy = u.epsChgYoy.get(r.symbol) ?? null;
+    }
   } catch {
-    /* RS is a best-effort extra column — never fail a scan over it */
+    /* ratings are best-effort extra columns — never fail a scan over them */
   }
   return rows;
 }
@@ -167,8 +221,10 @@ function rangePct(bars: Bar[], from: number, to: number): number | null {
 
 /**
  * Shared runner for bar-based scans: fetch liquid candidates from the DB, load
- * their recent daily bars in chunks, apply the per-stock predicate, collect
- * metric rows. `hit` returns the metrics object for a match, or null to skip.
+ * their recent daily bars in CHUNKS (a single query for 3,000+ symbols would
+ * materialise ~700k rows at once and OOM the dev server), apply the per-stock
+ * predicate, collect metric rows. `hit` returns the metrics object for a match,
+ * or null to skip.
  */
 async function scanWithBars<T extends Record<string, unknown>>(opts: {
   where?: Record<string, unknown>;
@@ -189,21 +245,27 @@ async function scanWithBars<T extends Record<string, unknown>>(opts: {
     select: { ...BASE_SELECT, ...(opts.select ?? {}) },
   })) as (Cand & T)[];
 
-  const barsMap = await loadBarsForSymbols(candidates.map((s) => s.symbol), opts.barsLimit);
+  // Bars are loaded and evaluated in bounded chunks so peak memory stays flat
+  // no matter how large the candidate window is (Trader Choice 5 scans 2,900+).
   const rows: ScanRow[] = [];
-  for (const s of candidates) {
-    const bars = barsMap.get(s.symbol);
-    if (!bars || bars.length < opts.minBars) continue;
-    const metrics = opts.hit(s, bars);
-    if (!metrics) continue;
-    rows.push({
-      symbol: s.symbol, name: s.name, price: s.price, changePct: s.changePct,
-      marketCap: s.marketCap, sector: s.sector,
-      mom1M: (s.mom1M as number | null) ?? null,
-      mom3M: (s.mom3M as number | null) ?? null,
-      mom6M: (s.mom6M as number | null) ?? null,
-      metrics,
-    });
+  const CHUNK = 400;
+  for (let i = 0; i < candidates.length; i += CHUNK) {
+    const batch = candidates.slice(i, i + CHUNK);
+    const barsMap = await loadBarsForSymbols(batch.map((s) => s.symbol), opts.barsLimit);
+    for (const s of batch) {
+      const bars = barsMap.get(s.symbol);
+      if (!bars || bars.length < opts.minBars) continue;
+      const metrics = opts.hit(s, bars);
+      if (!metrics) continue;
+      rows.push({
+        symbol: s.symbol, name: s.name, price: s.price, changePct: s.changePct,
+        marketCap: s.marketCap, sector: s.sector,
+        mom1M: (s.mom1M as number | null) ?? null,
+        mom3M: (s.mom3M as number | null) ?? null,
+        mom6M: (s.mom6M as number | null) ?? null,
+        metrics,
+      });
+    }
   }
   if (opts.sortMetric) {
     const key = opts.sortMetric;
@@ -413,7 +475,9 @@ const chartPatternScans: ScanDef[] = [
         hit: (s, bars) => {
           const n = bars.length;
           let best: { poleEnd: number; ret: number } | null = null;
-          for (let i = n - 45; i <= n - 1 - 3; i++) {
+          // the pole reads 9 bars ahead — i must keep i+9 inside the array
+          // (i <= n-10); the old open-ended bound read past the last bar.
+          for (let i = n - 45; i <= n - 1 - 9; i++) {
             if (i < 0) continue;
             const ret = (bars[i + 9].close / bars[i].close - 1) * 100;
             if (ret >= 12 && (!best || i + 9 > best.poleEnd)) best = { poleEnd: i + 9, ret };
@@ -1189,37 +1253,55 @@ const traderChoiceScans: ScanDef[] = [
   },
   {
     id: "trader-choice-5", name: "Trader Choice 5", category: "Trader Choice", needsBars: true,
-    description: "Quality setup — RSI 50-70 holding the rising 20 EMA after a shallow pullback, above the 50 EMA, with a tight 10-day range under 11%.",
+    description: "Low-base breakout screen — close ≥ 30% above the 66-day low, ≥ ₹30, ₹3 Cr+ turnover on 20-day average volume, above the 200 SMA, the last three weekly candles each rose ≤ 6%, and this week breaks the 4-week high. Scans every NSE name above ₹30 (no market-cap filter), so small caps are never excluded.",
     run: () =>
       scanWithBars({
-        barsLimit: 70, minBars: 60, take: 900,
-        select: { rsi14: true },
-        hit: (s, bars) => {
-          const rsiV = s.rsi14 as number;
-          if (rsiV == null || rsiV < 50 || rsiV > 70) return null;
+        // price ≥ ₹30 across the WHOLE universe — the take must cover every
+        // qualifying stock (2,900+ names), not a top-N slice by market cap.
+        // No market-cap filter: Yahoo lacks the field for a few listed names
+        // (e.g. ARTEMISMED.NS) and the turnover floor already removes illiquid
+        // micro-caps, so a size filter would only silently drop legitimate hits.
+        where: { price: { gte: 30 } },
+        barsLimit: 220, minBars: 210, take: 3500,
+        hit: (_s, bars) => {
           const n = bars.length;
           const closes = bars.map((b) => b.close);
-          const e20 = emaSeries(closes, 20), e50 = emaLast(closes, 50);
           const close = closes[n - 1];
-          const e20Now = e20[n - 1], e20Prev = e20[n - 6];
-          if (e20Now == null || e20Prev == null || e50 == null) return null;
-          if (!(close > e20Now && e20Now > e20Prev && close > e50)) return null;
-          const low5 = minLow(bars, n - 5, n);
-          if (low5 == null || low5 < e20Now * 0.985 || low5 > e20Now * 1.06) return null;
-          const r10 = rangePct(bars, n - 10, n);
-          if (r10 == null || r10 > 11) return null;
+          // ₹3 Cr+ turnover on 20-day average volume
+          const avgVol = volAvg(bars, n - 20, n);
+          if (avgVol <= 0 || close * avgVol <= 30_000_000) return null;
+          // above the 200 SMA
+          const sma200 = closes.slice(-200).reduce((a, c) => a + c, 0) / Math.min(200, closes.length);
+          if (close <= sma200) return null;
+          // close ≥ 1.30 × the 66-day low
+          const low66 = minLow(bars, n - 66, n);
+          if (low66 == null || low66 <= 0 || close / low66 < 1.3) return null;
+          // weekly checks — Monday-anchored weekly candles (last one partial)
+          const wk = weeklyBars(bars);
+          if (wk.length < 6) return null;
+          // this week breaks the 4-week high
+          let prior4High = -Infinity;
+          for (let i = wk.length - 5; i < wk.length - 1; i++) prior4High = Math.max(prior4High, wk[i].high);
+          if (!Number.isFinite(prior4High) || wk[wk.length - 1].high <= prior4High) return null;
+          // each of the last three completed weeks rose ≤ 6% (close over close)
+          for (let k = 1; k <= 3; k++) {
+            const w = wk[wk.length - 1 - k], wp = wk[wk.length - 2 - k];
+            if (!w || !wp || wp.close <= 0) return null;
+            if ((w.close / wp.close - 1) * 100 > 6) return null;
+          }
           return {
-            rsi14: rsiV,
-            emaDistPct: Number(((close / e20Now - 1) * 100).toFixed(2)),
-            tightRange10: Number(r10.toFixed(1)),
+            turnoverCr: Number(((close * avgVol) / 10_000_000).toFixed(1)),
+            above66LowPct: Number(((close / low66 - 1) * 100).toFixed(1)),
+            breakPct: Number(((wk[wk.length - 1].high / prior4High - 1) * 100).toFixed(1)),
           };
         },
         columns: [
-          { key: "rsi14", label: "RSI (14)", type: "rsi" },
-          { key: "emaDistPct", label: "Vs 20 EMA", type: "pct" },
-          { key: "tightRange10", label: "10-day range", type: "pct" },
+          { key: "turnoverCr", label: "Turnover (₹ Cr, 20D avg)", type: "num" },
+          { key: "above66LowPct", label: "Above 66D low", type: "pct" },
+          { key: "breakPct", label: "Above 4W high", type: "pct" },
         ],
-        sortMetric: "rsi14", sortDesc: true,
+        sortMetric: "turnoverCr", sortDesc: true,
+        cap: 200,
       }),
   },
   {
@@ -1259,6 +1341,55 @@ const traderChoiceScans: ScanDef[] = [
           { key: "fromHighPct", label: "From 52W high", type: "pct" },
         ],
         sortMetric: "signals", sortDesc: true,
+      }),
+  },
+  {
+    id: "trader-choice-7", name: "Trader Choice 7", category: "Trader Choice", needsBars: true,
+    description: "Fundamental-momentum stack — NSE stocks above the 20/50/200 EMA with 30-day average volume above 100K, quarterly revenue growth (QoQ) positive, quarterly diluted EPS growth (YoY) above 30%, and the day's high within 0-30% of the 52-week high. Price above ₹30.",
+    run: () =>
+      scanWithBars({
+        // Exchange = NSE (the universe is NSE-only) · price > ₹30 · the two
+        // fundamental filters run in the DB so only fundamentals-backed names
+        // get their bars loaded.
+        where: {
+          price: { gte: 30 },
+          epsQuarterlyGrowth: { gt: 0.30 },
+          revenueQoQGrowth: { gt: 0 },
+          symbol: { endsWith: ".NS" },
+        },
+        barsLimit: 220, minBars: 210, take: 1200,
+        select: { epsQuarterlyGrowth: true, revenueQoQGrowth: true },
+        hit: (_s, bars) => {
+          const n = bars.length;
+          const closes = bars.map((b) => b.close);
+          const close = closes[n - 1];
+          // price above the 20 / 50 / 200 EMA
+          const e20 = emaLast(closes, 20), e50 = emaLast(closes, 50), e200 = emaLast(closes, 200);
+          if (e20 == null || e50 == null || e200 == null) return null;
+          if (!(close > e20 && close > e50 && close > e200)) return null;
+          // 30-day average volume above 100K shares
+          const avg30 = volAvg(bars, n - 30, n);
+          if (avg30 <= 100_000) return null;
+          // the day's high sits 0-30% below the 52-week high
+          const h52 = maxHigh(bars, n - 250, n);
+          const today = bars[n - 1];
+          if (h52 == null || h52 <= 0 || today.high <= 0) return null;
+          const belowPct = ((h52 - today.high) / h52) * 100;
+          if (belowPct < 0 || belowPct > 30) return null;
+          return {
+            epsYoY: Number((_s.epsQuarterlyGrowth as number * 100).toFixed(1)),
+            revQoQ: Number((_s.revenueQoQGrowth as number * 100).toFixed(1)),
+            below52: Number(belowPct.toFixed(1)),
+            avgVol30D: Math.round(avg30),
+          };
+        },
+        columns: [
+          { key: "epsYoY", label: "EPS chg % (YoY)", type: "pct" },
+          { key: "revQoQ", label: "Revenue chg % (QoQ)", type: "pct" },
+          { key: "below52", label: "High vs 52W high", type: "pct" },
+          { key: "avgVol30D", label: "Avg vol (30D)", type: "vol" },
+        ],
+        sortMetric: "epsYoY", sortDesc: true,
       }),
   },
 ];
@@ -1303,7 +1434,7 @@ const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   "Momentum & RS": "Momentum scanner with RS rating, RS-high-before-price-high leadership and the 52-week high list.",
   Specialty: "Recent IPOs, IPO bases, circuit-band movers, established past winners and the shorting side.",
   "Multi-Timeframe RSI": "TradePulse addition — monthly + weekly + daily RSI alignment setups.",
-  "Trader Choice": "Six hand-picked multi-condition screens — momentum breakout, price action, breakout filters, volume trend, quality setup and a 6-signal confluence screen.",
+  "Trader Choice": "Seven hand-picked multi-condition screens — momentum breakout, price action, breakout filters, volume trend, a low-base weekly breakout, a 6-signal confluence screen and a fundamental-momentum EMA stack (EPS + revenue growth). Every result carries RS, EPS score and A/D rating.",
 };
 
 /** Category list with display descriptions, in catalog display order. */

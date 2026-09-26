@@ -93,6 +93,24 @@ model Stock {
   // Backfilled from src/lib/taxonomy.ts (Yahoo industry map + symbol overrides).
   indGrp       String?
   subGrp       String?
+
+  // Quarterly financials (quoteSummary trickle) — ratios as decimals (0.35 = +35%)
+  epsQuarterlyGrowth Float? // latest Q diluted EPS vs year-ago Q (Yahoo earningsQuarterlyGrowth)
+  revenueQoQGrowth   Float? // latest Q totalRevenue vs prior Q
+  netIncome3YCagr    Float? // 3-year net income CAGR from the annual income statement
+  financialsSynced   DateTime?
+
+  // MarketSmith-style ratings — recomputed over the whole universe after syncs
+  rsRating  Int?    // 1-99: percentile of 12M weighted momentum (0.4·3M + 0.2·6M + 0.2·9M + 0.2·12M)
+  epsScore  Int?    // 1-99: composite percentile of EPS Q-growth, 3Y NI CAGR and revenue QoQ
+  adRating  String? // A+ … E: 13-week up-day vs down-day volume classification
+
+  // Weekly OHLC of the current (Mon-anchored) week candle — rebuilt by the bars
+  // trickle so the screener builder can run Weekly-timeframe price conditions.
+  wOpen  Float?
+  wHigh  Float?
+  wLow   Float?
+  wClose Float?
   quoteTime      DateTime?
   universeSynced DateTime?
   createdAt      DateTime  @default(now())
@@ -104,6 +122,8 @@ model Stock {
   @@index([rsi14])
   @@index([indGrp])
   @@index([subGrp])
+  @@index([rsRating])
+  @@index([epsScore])
 }
 
 // OHLCV daily bars, fetched on demand for stock detail views and cached.
@@ -156,6 +176,9 @@ model SyncState {
   barsDone      Int       @default(0)
   earningsTotal Int       @default(0)
   earningsDone  Int       @default(0)
+  financialsTotal Int     @default(0)
+  financialsDone  Int     @default(0)
+  ratingsSynced DateTime?
   lastError     String?
   startedAt     DateTime?
   updatedAt     DateTime  @updatedAt

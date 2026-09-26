@@ -62,7 +62,7 @@ export const PRO_PLANS: Record<Cycle, ProPlan> = {
   },
 };
 
-export const TOTAL_SCANS = 38;
+export const TOTAL_SCANS = 39;
 export const TOTAL_CATEGORIES = 8;
 export const BASIC_SCANS = 9;
 

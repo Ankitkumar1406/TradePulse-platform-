@@ -202,7 +202,7 @@ export function UpgradeDialog({ open, onOpenChange }: { open: boolean; onOpenCha
             {/* features */}
             <ul className="mt-3 space-y-1.5 text-xs">
               {[
-                "All 38 scanners across 8 categories — incl. Trader Choice templates",
+                "All 39 scanners across 8 categories — incl. Trader Choice templates",
                 "Charts view with timeframe, EMA, base overlay & RS filters",
                 "Sector rotation quadrant, sector strength & momentum",
                 "Trading journal & market calendar",

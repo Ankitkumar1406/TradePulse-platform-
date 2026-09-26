@@ -17,7 +17,7 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "TradePulse — End-of-day research & scanners for every NSE stock",
   description:
-    "All 3,545 NSE-listed stocks. 38 one-click scanners incl. Trader Choice templates, market breadth, sector rotation & momentum, a professional trading journal and the market calendar — built for working professionals and students who research after the close.",
+    "All 3,551 NSE-listed stocks. 39 one-click scanners incl. Trader Choice templates with RS, EPS score & A/D ratings, market breadth, sector rotation & momentum, a professional trading journal and the market calendar — built for working professionals and students who research after the close.",
   keywords: ["NSE", "stock screener", "end of day", "scanners", "market breadth", "trading journal"],
   authors: [{ name: "TradePulse" }],
   openGraph: {

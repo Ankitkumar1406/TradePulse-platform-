@@ -18,7 +18,9 @@ export const dynamic = "force-dynamic";
  */
 
 const NUMERIC_FIELDS = [
-  "price", "changePct", "volume", "avgVol3M", "marketCap",
+  "price", "open", "dayHigh", "dayLow", "changePct", "volume", "avgVol3M", "marketCap",
+  // current-week candle columns (screener builder Weekly timeframe)
+  "wOpen", "wHigh", "wLow", "wClose",
   "peTTM", "pbRatio", "divYield",
   "rsi14", "wRsi14", "macdHist", "wMacdHist", "mom1M", "mom3M", "mom6M",
   "fromHighPct", "fromLowPct", "atr14Pct",

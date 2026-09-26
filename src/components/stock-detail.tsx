@@ -25,6 +25,7 @@ interface StockDetail {
   fromHighPct: number | null; fromLowPct: number | null;
   aboveSma20: boolean | null; aboveSma50: boolean | null; aboveSma200: boolean | null; goldenCross: boolean | null;
   earningsDate: string | null;
+  rsRating: number | null; epsScore: number | null; adRating: string | null; epsQuarterlyGrowth: number | null;
   bars: Candle[];
 }
 
@@ -148,12 +149,16 @@ export function StockDetail({ symbol, open, onClose, isPro }: { symbol: string; 
                     Base overlay
                   </button>
                 </div>
-                <CandleChart candles={data.bars ?? []} height={440} showBase={showBase} />
+                <CandleChart candles={data.bars ?? []} height={440} showBase={showBase} maMode={20} />
               </div>
 
               {/* indicators grid */}
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
                 <Stat label="RSI (14)" value={fmtNum(data.rsi14, 1)} tone={data.rsi14 != null ? (data.rsi14 > 60 ? "up" : data.rsi14 < 40 ? "down" : undefined) : undefined} />
+                <Stat label="RS rating" value={data.rsRating != null ? String(data.rsRating) : "—"} hint="12M momentum percentile" tone={data.rsRating != null ? (data.rsRating >= 70 ? "up" : data.rsRating < 40 ? "down" : undefined) : undefined} />
+                <Stat label="EPS score" value={data.epsScore != null ? String(data.epsScore) : "—"} hint="growth percentile (1-99)" tone={data.epsScore != null ? (data.epsScore >= 70 ? "up" : data.epsScore < 40 ? "down" : undefined) : undefined} />
+                <Stat label="A/D rating" value={data.adRating ?? "—"} hint="13-wk up/down volume" tone={data.adRating ? (data.adRating.startsWith("A") ? "up" : data.adRating.startsWith("D") || data.adRating === "E" ? "down" : undefined) : undefined} />
+                <Stat label="EPS chg % (YoY)" value={data.epsQuarterlyGrowth != null ? fmtPct(data.epsQuarterlyGrowth * 100, 1) : "—"} tone={data.epsQuarterlyGrowth != null ? (data.epsQuarterlyGrowth > 0 ? "up" : "down") : undefined} />
                 <Stat label="MACD hist" value={fmtNum(data.macdHist)} tone={data.macdHist != null ? (data.macdHist > 0 ? "up" : "down") : undefined} />
                 <Stat label="ATR %" value={fmtNum(data.atr14Pct, 1)} />
                 <Stat label="1M return" value={fmtPct(data.mom1M, 1)} tone={data.mom1M != null ? (data.mom1M > 0 ? "up" : "down") : undefined} />
