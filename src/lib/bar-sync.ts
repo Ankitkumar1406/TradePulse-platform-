@@ -57,6 +57,12 @@ export async function expectedLatestBarDate(): Promise<string | null> {
     // regularMarketTime is the UTC instant of the last NSE trade (~15:30 IST);
     // shift to IST before taking the calendar date.
     const ist = new Date(qt.getTime() + IST_OFFSET_MIN * 60 * 1000);
+    // Clamp to the last Mon–Fri: on weekends Yahoo can report a non-trading
+    // "last update" instant, and a Saturday/Sunday target date would make
+    // every Friday bar look stale → whole-universe re-fetch on every boot.
+    const dow = ist.getUTCDay();
+    if (dow === 0) ist.setUTCDate(ist.getUTCDate() - 2); // Sunday → Friday
+    else if (dow === 6) ist.setUTCDate(ist.getUTCDate() - 1); // Saturday → Friday
     expDateCache = { date: ist.toISOString().slice(0, 10), at: Date.now() };
     return expDateCache.date;
   } catch {

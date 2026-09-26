@@ -84,9 +84,10 @@ export function startBarsTrickle() {
     try {
       // Worker pool — the old sequential 6-chunk loop took 40+ minutes for
       // the full universe and could die mid-pass on a server recycle,
-      // leaving charts days behind the quotes/closes data. Parallel workers
-      // finish in a few minutes.
-      const CONCURRENCY = 6;
+      // leaving charts days behind the quotes/closes data. Workers stay
+      // gentle on the SQLite write lock (short gap between symbols) so
+      // concurrent reads (login, screener, charts) are never starved.
+      const CONCURRENCY = 4;
       let cursor = 0;
       let done = 0;
 
@@ -151,6 +152,7 @@ export function startBarsTrickle() {
           }
           done++;
           if (done % 24 === 0) await bumpCounters({ barsDone: done });
+          await sleep(150); // breathing room between write transactions
         }
       };
 
