@@ -421,7 +421,9 @@ const INDEX_DEFS: { symbol: string; name: string }[] = [
   { symbol: "^NSEBANK", name: "BANK NIFTY" },
   { symbol: "^BSESN", name: "SENSEX" },
   { symbol: "^CNXIT", name: "NIFTY IT" },
-  { symbol: "^CNXMIDCAP", name: "NIFTY MIDCAP 100" },
+  // NIFTY MIDCAP 100 — the old ^CNXMIDCAP Yahoo symbol is dead (404); the
+  // .NS-listed index feed is the live replacement.
+  { symbol: "NIFTY_MIDCAP_100.NS", name: "NIFTY MIDCAP 100" },
   { symbol: "^INDIAVIX", name: "INDIA VIX" },
 ];
 

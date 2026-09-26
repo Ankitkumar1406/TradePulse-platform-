@@ -11,12 +11,17 @@ interface CacheEntry {
   data: unknown;
 }
 const g = globalThis as unknown as {
-  __marketCache?: Partial<{ indices: CacheEntry; payload: CacheEntry }>;
+  __marketCache?: Partial<Record<string, CacheEntry>>;
 };
 
-export async function GET() {
+export async function GET(req: Request) {
   try {
     const now = Date.now();
+    const url = new URL(req.url);
+    // movers=liquid (default) keeps circuit-filter penny noise out of the
+    // Gainers/Losers lists: price ≥ ₹10, turnover (price × volume) ≥ ₹1 Cr,
+    // market cap ≥ ₹100 Cr. movers=all restores the raw lists.
+    const moversMode = url.searchParams.get("movers") === "all" ? "all" : "liquid";
 
     // --- Indices (10 min cache; slow calls) ---
     const idxCache = g.__marketCache?.indices;
@@ -28,8 +33,8 @@ export async function GET() {
       (g.__marketCache ??= {}).indices = { at: now, data: indices };
     }
 
-    // --- Breadth + movers + sectors from DB (30s cache) ---
-    const pCache = g.__marketCache?.payload;
+    // --- Breadth + movers + sectors from DB (30s cache, per movers mode) ---
+    const pCache = g.__marketCache?.[`payload_${moversMode}`];
     if (pCache && now - pCache.at < 30 * 1000) {
       return NextResponse.json({ indices, ...(pCache.data as object), alertsTriggered: 0 });
     }
@@ -62,9 +67,25 @@ export async function GET() {
 
     const liquid = { ...base, marketCap: { gte: 1e9 } }; // >= 100 Cr to avoid micro-cap noise
 
+    // Circuit filters (ADSL/XELPMOC-style upper-circuit names) dominate raw
+    // changePct ranks. In liquid mode fetch a wider candidate window then keep
+    // only names with ≥ ₹1 Cr actually traded today (price × volume).
+    async function movers(dir: "desc" | "asc") {
+      if (moversMode === "all") {
+        return db.stock.findMany({ where: liquid, orderBy: { changePct: dir }, take: 10, select });
+      }
+      const candidates = await db.stock.findMany({
+        where: { ...liquid, price: { gte: 10 }, volume: { gte: 20_000 } },
+        orderBy: { changePct: dir },
+        take: 80,
+        select,
+      });
+      return candidates.filter((r) => r.price != null && r.volume != null && r.price * r.volume >= 1e7).slice(0, 10);
+    }
+
     const [gainers, losers, mostActive, sectors] = await Promise.all([
-      db.stock.findMany({ where: liquid, orderBy: { changePct: "desc" }, take: 10, select }),
-      db.stock.findMany({ where: liquid, orderBy: { changePct: "asc" }, take: 10, select }),
+      movers("desc"),
+      movers("asc"),
       db.stock.findMany({
         where: base,
         orderBy: [{ volume: "desc" }, { marketCap: "desc" }],
@@ -97,7 +118,7 @@ export async function GET() {
           totalMcap: s._sum.marketCap ?? 0,
         })),
     };
-    (g.__marketCache ??= {}).payload = { at: now, data: payload };
+    (g.__marketCache ??= {})[`payload_${moversMode}`] = { at: now, data: payload };
 
     return NextResponse.json({ indices, ...payload, alertsTriggered });
   } catch (e) {

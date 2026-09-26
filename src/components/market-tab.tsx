@@ -6,11 +6,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { BarChart3, Check, ChevronDown, TrendingUp } from "lucide-react";
+import { BarChart3, Check, ChevronDown, ChevronRight, TrendingUp } from "lucide-react";
 import { changeColor, fmtPct, fmtPrice, fmtVol } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { SectorRotation, SectorStrength, SectorSkeleton, type SectorPayload } from "@/components/sector-views";
 import { SectorMomentumView } from "@/components/sector-momentum-view";
+import {
+  ADLineCard, NhNlCard, SectorBreadthGrid, SegmentCards, Sparkline,
+  type BreadthAnalytics, type HistoryRow,
+} from "@/components/breadth-analytics";
 
 interface IndexQuote { symbol: string; name: string; price: number; changePct: number }
 interface Row {
@@ -94,15 +98,32 @@ function MarketViewDropdown({ value, onChange }: { value: SubView; onChange: (v:
 
 export function MarketTab({ onSelectStock, isPro = false, onUpgrade, onOpenWatchlist }: { onSelectStock: (s: string) => void; isPro?: boolean; onUpgrade?: () => void; onOpenWatchlist?: () => void }) {
   const [subView, setSubView] = useState<SubView>("breadth");
+  // Liquid mode filters circuit-pennies out of Gainers/Losers (server-side).
+  const [moversLiquid, setMoversLiquid] = useState(true);
+  const moversParam = moversLiquid ? "liquid" : "all";
 
   const { data, isLoading } = useQuery<MarketData>({
-    queryKey: ["market"],
+    queryKey: ["market", moversParam],
     queryFn: async () => {
-      const res = await fetch("/api/market");
+      const res = await fetch(`/api/market?movers=${moversParam}`);
       if (!res.ok) throw new Error("market failed");
       return res.json();
     },
     refetchInterval: 60_000,
+    placeholderData: (prev) => prev,
+  });
+
+  // Breadth history + breakdowns — heavy server-side computation, cached;
+  // only refreshed alongside new sessions.
+  const { data: breadth } = useQuery<BreadthAnalytics>({
+    queryKey: ["breadth-history"],
+    queryFn: async () => {
+      const res = await fetch("/api/market/breadth-history");
+      if (!res.ok) throw new Error("breadth history failed");
+      return res.json();
+    },
+    staleTime: 10 * 60_000,
+    refetchInterval: 15 * 60_000,
   });
 
   // Sector analytics only fetched when the rotation/strength view is open.
@@ -146,7 +167,10 @@ export function MarketTab({ onSelectStock, isPro = false, onUpgrade, onOpenWatch
                     <div className={cn("font-mono text-xs", changeColor(idx.changePct))}>{fmtPct(idx.changePct)}</div>
                   </>
                 ) : (
-                  <div className="mt-0.5 text-xs text-zinc-600">unavailable</div>
+                  <div className="mt-1 flex items-center gap-1.5 text-xs text-zinc-500" title="Index feed reconnecting — syncs every trading day at 4:00 pm IST">
+                    <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400" />
+                    syncing…
+                  </div>
                 )}
               </CardContent>
             </Card>
@@ -162,7 +186,7 @@ export function MarketTab({ onSelectStock, isPro = false, onUpgrade, onOpenWatch
           </div>
         </div>
       ) : (
-        <BreadthView data={data} onSelectStock={onSelectStock} />
+        <BreadthView data={data} breadth={breadth} moversLiquid={moversLiquid} onMoversToggle={setMoversLiquid} onSelectStock={onSelectStock} />
       ))}
 
       {subView === "momentum" && <SectorMomentumView />}
@@ -184,22 +208,49 @@ export function MarketTab({ onSelectStock, isPro = false, onUpgrade, onOpenWatch
 
 // ---------------- breadth view (original market data) ----------------
 
-function BreadthView({ data, onSelectStock }: { data: MarketData; onSelectStock: (s: string) => void }) {
-  const { breadth } = data;
-  const advPct = breadth.total ? (breadth.advances / breadth.total) * 100 : 50;
-  const decPct = breadth.total ? (breadth.declines / breadth.total) * 100 : 50;
+function fmtAsOf(iso: string | null): string | null {
+  if (!iso) return null;
+  return new Date(iso).toLocaleString("en-IN", {
+    day: "numeric", month: "short", hour: "numeric", minute: "2-digit", hour12: true, timeZone: "Asia/Kolkata",
+  });
+}
+
+function BreadthView({
+  data, breadth, moversLiquid, onMoversToggle, onSelectStock,
+}: {
+  data: MarketData;
+  breadth?: BreadthAnalytics;
+  moversLiquid: boolean;
+  onMoversToggle: (v: boolean) => void;
+  onSelectStock: (s: string) => void;
+}) {
+  const { breadth: b } = data;
+  const advPct = b.total ? (b.advances / b.total) * 100 : 50;
+  const decPct = b.total ? (b.declines / b.total) * 100 : 50;
+
+  const hist = breadth?.history ?? [];
+  const last: HistoryRow | undefined = hist[hist.length - 1];
+  const spark = (key: keyof HistoryRow) => hist.slice(-22).map((h) => h[key] as number);
+  const delta = (live: number, key: keyof HistoryRow) => (last ? live - (last[key] as number) : null);
+  const asOf = fmtAsOf(breadth?.asOf ?? null);
 
   return (
     <div className="space-y-4">
       {/* Breadth */}
       <Card className="bg-zinc-900/60 border-zinc-800">
         <CardContent className="p-4">
-          <div className="flex items-center justify-between text-xs mb-2">
-            <span className="font-medium text-zinc-300">Market breadth · {breadth.total.toLocaleString("en-IN")} stocks</span>
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-xs mb-2">
+            <span className="font-medium text-zinc-300">Market breadth · {b.total.toLocaleString("en-IN")} stocks</span>
             <span className="font-mono">
-              <span className="text-emerald-400">{breadth.advances} ▲</span>
-              <span className="text-zinc-500 mx-2">{breadth.unchanged} =</span>
-              <span className="text-red-400">{breadth.declines} ▼</span>
+              <span className="text-emerald-400">{b.advances.toLocaleString("en-IN")} ▲</span>
+              {delta(b.advances, "adv") != null && (
+                <DeltaBadge v={delta(b.advances, "adv")!} cls="text-emerald-400" />
+              )}
+              <span className="text-zinc-500 mx-2">{b.unchanged.toLocaleString("en-IN")} =</span>
+              <span className="text-red-400">{b.declines.toLocaleString("en-IN")} ▼</span>
+              {delta(b.declines, "dec") != null && (
+                <DeltaBadge v={delta(b.declines, "dec")!} cls="text-red-400" invert />
+              )}
             </span>
           </div>
           <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-zinc-800">
@@ -208,20 +259,76 @@ function BreadthView({ data, onSelectStock }: { data: MarketData; onSelectStock:
             <div className="bg-red-500/80 h-full" style={{ width: `${decPct}%` }} />
           </div>
           <div className="mt-3 grid grid-cols-2 sm:grid-cols-5 gap-2 text-center">
-            <Participation label="Above 20 SMA" value={breadth.aboveSma20} total={breadth.total} />
-            <Participation label="Above 50 SMA" value={breadth.aboveSma50} total={breadth.total} />
-            <Participation label="Above 200 SMA" value={breadth.aboveSma200} total={breadth.total} />
-            <Participation label="52W Highs" value={breadth.newHighs} total={breadth.total} tone="up" />
-            <Participation label="52W Lows" value={breadth.newLows} total={breadth.total} tone="down" />
+            <Participation label="Above 20 SMA" value={b.aboveSma20} total={b.total}
+              delta={delta(b.aboveSma20, "above20")} spark={breadth ? spark("above20") : undefined} asOf={last?.date} />
+            <Participation label="Above 50 SMA" value={b.aboveSma50} total={b.total}
+              delta={delta(b.aboveSma50, "above50")} spark={breadth ? spark("above50") : undefined} asOf={last?.date} />
+            <Participation label="Above 200 SMA" value={b.aboveSma200} total={b.total}
+              delta={delta(b.aboveSma200, "above200")} spark={breadth ? spark("above200") : undefined} asOf={last?.date} />
+            <Participation label="52W Highs" value={b.newHighs} total={b.total} tone="up"
+              delta={delta(b.newHighs, "nh")} spark={breadth ? spark("nh") : undefined} asOf={last?.date} />
+            <Participation label="52W Lows" value={b.newLows} total={b.total} tone="down"
+              delta={delta(b.newLows, "nl")} spark={breadth ? spark("nl") : undefined} asOf={last?.date} />
           </div>
+          {(asOf || breadth?.lastFullDate) && (
+            <p className="mt-2 text-[10px] text-zinc-600">
+              {asOf && <>As of <span className="text-zinc-500">{asOf} IST</span></>}
+              {asOf && breadth?.lastFullDate && " · "}
+              {breadth?.lastFullDate && <>breadth history through <span className="text-zinc-500">{fmtAsOf(breadth.lastFullDate + "T15:30:00+05:30")}</span> session</>}
+              {" · "}▲▼ vs previous session
+            </p>
+          )}
         </CardContent>
       </Card>
 
+      {/* A/D line + NH-NL trend */}
+      {breadth && breadth.history.length >= 4 && (
+        <div className="grid gap-4 xl:grid-cols-3">
+          <div className="xl:col-span-2"><ADLineCard history={breadth.history} /></div>
+          <NhNlCard history={breadth.history} />
+        </div>
+      )}
+
+      {/* Movers */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs font-medium text-zinc-400">
+          Today&apos;s movers
+          <span className="ml-1.5 text-[10px] text-zinc-600">
+            {moversLiquid ? "min price ₹10 · min ₹1 Cr traded · mcap ≥ ₹100 Cr" : "unfiltered"}
+          </span>
+        </div>
+        <div
+          role="group"
+          aria-label="Movers liquidity filter"
+          title={moversLiquid ? "Showing liquid names — switch to All to include every listed stock" : "Unfiltered — circuit-limit penny noise included"}
+          className="flex shrink-0 items-center rounded-md border border-zinc-800 bg-zinc-950/60 p-0.5"
+        >
+          {(["Liquid", "All"] as const).map((lbl) => {
+            const active = (lbl === "Liquid") === moversLiquid;
+            return (
+              <button
+                key={lbl}
+                onClick={() => onMoversToggle(lbl === "Liquid")}
+                className={cn(
+                  "rounded px-2 py-0.5 text-[10px] font-medium transition-colors",
+                  active ? "bg-zinc-800 text-zinc-100" : "text-zinc-500 hover:text-zinc-300",
+                )}
+              >
+                {lbl}
+              </button>
+            );
+          })}
+        </div>
+      </div>
       <div className="grid lg:grid-cols-3 gap-4">
         <MoverCard title="Top Gainers" rows={data.gainers} onSelectStock={onSelectStock} />
         <MoverCard title="Top Losers" rows={data.losers} onSelectStock={onSelectStock} />
         <MoverCard title="Most Active by Volume" rows={data.mostActive} onSelectStock={onSelectStock} showVolume />
       </div>
+
+      {/* Sector breadth heatmap + cap/F&O splits */}
+      {breadth && breadth.sectors.length > 0 && <SectorBreadthGrid sectors={breadth.sectors} />}
+      {breadth && <SegmentCards segments={breadth.segments} fno={breadth.fno} />}
 
       {/* Sector performance */}
       <Card className="bg-zinc-900/60 border-zinc-800">
@@ -247,18 +354,52 @@ function BreadthView({ data, onSelectStock }: { data: MarketData; onSelectStock:
   );
 }
 
-function Participation({ label, value, total, tone }: { label: string; value: number; total: number; tone?: "up" | "down" }) {
+/** Small ▲/▼ comparison chip shown next to a stat. */
+function DeltaBadge({ v, cls, invert }: { v: number; cls: string; invert?: boolean }) {
+  if (Math.round(v) === 0) return <span className="ml-1 text-[9px] text-zinc-600">·</span>;
+  const up = invert ? v < 0 : v > 0;
+  return (
+    <span className={cn("ml-1 text-[9px] font-semibold", cls)}>
+      {up ? "▲" : "▼"}{Math.abs(Math.round(v)).toLocaleString("en-IN")}
+    </span>
+  );
+}
+
+function Participation({
+  label, value, total, tone, delta, spark, asOf,
+}: {
+  label: string;
+  value: number;
+  total: number;
+  tone?: "up" | "down";
+  delta: number | null;
+  spark?: number[];
+  asOf?: string;
+}) {
   const pct = total ? Math.round((value / total) * 100) : 0;
+  const prev = spark && spark.length > 1 ? spark[spark.length - 1] : null;
+  const sparkTone: "up" | "down" | "neutral" = prev == null ? "neutral" : (spark![spark!.length - 1] >= prev ? "up" : "down");
   return (
     <div className="rounded-md border border-zinc-800 bg-zinc-950/60 px-2 py-1.5">
       <div className="text-[9px] uppercase tracking-wider text-zinc-500">{label}</div>
-      <div className={cn(
-        "font-mono text-sm font-semibold",
-        tone === "up" ? "text-emerald-400" : tone === "down" ? "text-red-400" : pct >= 50 ? "text-emerald-400" : "text-zinc-200"
-      )}>
-        {value.toLocaleString("en-IN")}
+      <div className="flex items-baseline justify-center gap-1.5">
+        <div className={cn(
+          "font-mono text-sm font-semibold",
+          tone === "up" ? "text-emerald-400" : tone === "down" ? "text-red-400" : pct >= 50 ? "text-emerald-400" : "text-zinc-200"
+        )}>
+          {value.toLocaleString("en-IN")}
+        </div>
+        {delta != null && Math.round(delta) !== 0 && (
+          <span
+            className={cn("text-[9px] font-semibold", (tone === "down" ? delta < 0 : delta > 0) ? "text-emerald-400" : "text-red-400")}
+            title={asOf ? `vs ${asOf} session` : "vs previous session"}
+          >
+            {delta > 0 ? "▲" : "▼"}{Math.abs(Math.round(delta)).toLocaleString("en-IN")}
+          </span>
+        )}
       </div>
       <div className="text-[9px] text-zinc-600">{pct}% of universe</div>
+      {spark && <Sparkline values={spark} tone={sparkTone} />}
     </div>
   );
 }
@@ -274,17 +415,22 @@ function MoverCard({ title, rows, onSelectStock, showVolume }: { title: string; 
             <button
               key={r.symbol}
               onClick={() => onSelectStock(r.symbol)}
-              className="flex w-full items-center justify-between px-4 py-2 text-left hover:bg-zinc-800/50 transition-colors"
+              className="group flex w-full items-center justify-between gap-2 px-4 py-2 text-left transition-colors hover:bg-zinc-800/60"
             >
-              <span className="min-w-0">
-                <span className="block text-xs font-semibold text-zinc-200">{r.symbol.replace(".NS", "")}</span>
-                <span className="block truncate text-[10px] text-zinc-500">{r.name}</span>
-              </span>
-              <span className="shrink-0 text-right">
-                <span className="block font-mono text-xs text-zinc-300">{fmtPrice(r.price)}</span>
-                <span className={cn("block font-mono text-[10px]", changeColor(r.changePct))}>
-                  {fmtPct(r.changePct)}{showVolume && r.volume ? ` · ${fmtVol(r.volume)}` : ""}
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="min-w-0">
+                  <span className="block text-xs font-semibold text-zinc-200 group-hover:text-zinc-50">{r.symbol.replace(".NS", "")}</span>
+                  <span className="block truncate text-[10px] text-zinc-500">{r.name}</span>
                 </span>
+              </span>
+              <span className="flex shrink-0 items-center gap-1">
+                <span className="text-right">
+                  <span className="block font-mono text-xs text-zinc-300">{fmtPrice(r.price)}</span>
+                  <span className={cn("block font-mono text-[10px]", changeColor(r.changePct))}>
+                    {fmtPct(r.changePct)}{showVolume && r.volume ? ` · ${fmtVol(r.volume)}` : ""}
+                  </span>
+                </span>
+                <ChevronRight className="h-3 w-3 text-zinc-700 transition-colors group-hover:text-emerald-400" />
               </span>
             </button>
           ))}

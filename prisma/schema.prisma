@@ -139,6 +139,7 @@ model DailyBar {
 
   @@unique([symbol, date])
   @@index([symbol])
+  @@index([date])
 }
 
 model WatchlistItem {
