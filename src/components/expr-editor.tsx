@@ -24,8 +24,8 @@ export function ExprEditor({
   placeholder: string;
   ariaLabel: string;
   inputKey: string; // "${rowId}:${side}"
-  registerInput: (key: string, el: HTMLInputElement | null) => void;
-  onFocusKey: (key: string) => void;
+  registerInput?: (key: string, el: HTMLInputElement | null) => void;
+  onFocusKey?: (key: string) => void;
 }) {
   const parsed = useMemo(
     () => (value.trim() ? parseProExpr(value) : null),
@@ -37,10 +37,10 @@ export function ExprEditor({
   return (
     <div className="min-w-0 flex-1">
       <input
-        ref={(el) => registerInput(inputKey, el)}
+        ref={(el) => registerInput?.(inputKey, el)}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        onFocus={() => onFocusKey(inputKey)}
+        onFocus={() => onFocusKey?.(inputKey)}
         placeholder={placeholder}
         aria-label={ariaLabel}
         spellCheck={false}

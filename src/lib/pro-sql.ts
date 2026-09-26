@@ -72,19 +72,44 @@ export interface ExprRowWire {
   l?: unknown;
   r?: unknown;
   r2?: unknown;
+  pct?: unknown; // withinPct — percent width
   logic?: unknown;
 }
 
 export type ProRowWire = FieldRowWire | ExprRowWire;
 
-export const EXPR_CMPS = ["gt", "gte", "lt", "lte", "eq", "between"] as const;
+export const EXPR_CMPS = [
+  "gt", "gte", "lt", "lte", "eq", "between", "crossAbove", "crossBelow", "withinPct",
+] as const;
 type ExprCmp = (typeof EXPR_CMPS)[number];
 
-const CMP_SQL: Record<ExprCmp, string> = {
-  gt: ">", gte: ">=", lt: "<", lte: "<=", eq: "=", between: "between",
+const DIRECT_CMP_SQL: Record<"gt" | "gte" | "lt" | "lte" | "eq", string> = {
+  gt: ">", gte: ">=", lt: "<", lte: "<=", eq: "=",
 };
 
 export class ProCompileError extends Error {}
+
+// ------------------------------------------------------------ v2 payload
+
+/** Versioned condition payload from the rebuilt visual builder. Row semantics:
+ *  the `logic` chip joins a row to the previous one; AND chips split the chain
+ *  into OR-groups (the amber boxes in the UI) and the groups AND-combine —
+ *  i.e. A AND (B OR C), exactly as the boxes read. */
+export interface V2CondPayload {
+  v: 2;
+  rows: ProRowWire[];
+}
+
+export function isV2Payload(x: unknown): x is V2CondPayload {
+  return (
+    typeof x === "object" &&
+    x !== null &&
+    (x as { v?: unknown }).v === 2 &&
+    Array.isArray((x as { rows?: unknown }).rows)
+  );
+}
+
+export type CondSemantics = "legacy" | "v2";
 
 // ------------------------------------------------------------ feature collection
 
@@ -211,30 +236,75 @@ function compileFieldRow(raw: FieldRowWire): CompiledRow | null {
   }
 }
 
-/** Pro expression row → SQL comparing both sides of the row. */
-function compileExprRow(ctx: FeatCtx, raw: ExprRowWire, rowIdx: number): CompiledRow {
-  const cmp = typeof raw.cmp === "string" && (EXPR_CMPS as readonly string[]).includes(raw.cmp)
-    ? (raw.cmp as ExprCmp)
-    : null;
-  if (!cmp) throw new ProCompileError(`Row ${rowIdx}: unknown operator — pick >, ≥, <, ≤, = or between`);
-  const side = (x: unknown, what: string): string => {
-    if (typeof x !== "string" || !x.trim()) {
-      throw new ProCompileError(`Row ${rowIdx}: the ${what} expression is empty`);
-    }
-    const parsed = parseProExpr(x);
-    if (!parsed.ok) throw new ProCompileError(`Row ${rowIdx}: ${parsed.error}`);
-    return nodeSql(ctx, parsed.node);
-  };
-  const l = side(raw.l, "left");
-  const r = side(raw.r, "right");
-  if (cmp === "between") {
-    const r2 = side(raw.r2, "second right");
-    return {
-      sql: `(${l}) BETWEEN min((${r}), (${r2})) AND max((${r}), (${r2}))`,
-      params: [],
-    };
+/** A copy of the AST with every candle series advanced `bars` bars back —
+ *  daily series shift in daily bars, weekly series in weekly candles. This is
+ *  "the previous value of this expression", the backbone of the crosses
+ *  pattern: close crosses above 50 ⇔ close > 50 AND prev(close) <= 50. */
+function shiftNode(n: ExprNode, bars: number): ExprNode {
+  switch (n.k) {
+    case "ser":
+      return { ...n, shift: n.shift + bars };
+    case "win":
+      return { ...n, ser: { ...n.ser, shift: n.ser.shift + bars } };
+    case "neg":
+      return { k: "neg", a: shiftNode(n.a, bars) };
+    case "abs":
+      return { k: "abs", a: shiftNode(n.a, bars) };
+    case "bin":
+      return { k: "bin", op: n.op, a: shiftNode(n.a, bars), b: shiftNode(n.b, bars) };
+    default:
+      return n; // num / scalar — constants have no previous bar
   }
-  return { sql: `(${l}) ${CMP_SQL[cmp]} (${r})`, params: [] };
+}
+
+function hasSeries(n: ExprNode): boolean {
+  switch (n.k) {
+    case "ser":
+    case "win":
+      return true;
+    case "neg":
+    case "abs":
+      return hasSeries(n.a);
+    case "bin":
+      return hasSeries(n.a) || hasSeries(n.b);
+    default:
+      return false;
+  }
+}
+
+/** One pro row → SQL. `ctx` collects the window features both for the full
+ *  query and (with a throwaway ctx) for the cheap pre-filter. */
+function rowSql(
+  ctx: FeatCtx,
+  cmp: ExprCmp,
+  rowIdx: number,
+  ln: ExprNode,
+  rn: ExprNode,
+  r2n: ExprNode | null,
+  pct: number | null
+): string {
+  const l = nodeSql(ctx, ln);
+  const r = nodeSql(ctx, rn);
+  if (cmp === "crossAbove" || cmp === "crossBelow") {
+    if (!hasSeries(ln) && !hasSeries(rn)) {
+      throw new ProCompileError(
+        `Row ${rowIdx}: crosses needs candle fields (price, volume, sma…) — snapshot values have no previous bar`
+      );
+    }
+    const lPrev = nodeSql(ctx, shiftNode(ln, 1));
+    const rPrev = nodeSql(ctx, shiftNode(rn, 1));
+    const main = cmp === "crossAbove" ? ">" : "<";
+    const prev = cmp === "crossAbove" ? "<=" : ">=";
+    return `(${l}) ${main} (${r}) AND (${lPrev}) ${prev} (${rPrev})`;
+  }
+  if (cmp === "withinPct") {
+    return `(ABS((${l}) - (${r})) / ABS((${r}))) * 100.0 <= ${pct}`;
+  }
+  if (cmp === "between" && r2n) {
+    const r2 = nodeSql(ctx, r2n);
+    return `(${l}) BETWEEN min((${r}), (${r2})) AND max((${r}), (${r2}))`;
+  }
+  return `(${l}) ${DIRECT_CMP_SQL[cmp]} (${r})`;
 }
 
 export const MAX_PRO_ROWS = 50;
@@ -273,11 +343,22 @@ interface Group {
 }
 
 /**
- * Compile all rows into OR-groups (a row with logic:"or" starts a new
- * conjunction — same semantics as the fast path), collecting per group the
- * snapshot-only conditions for the candidate pre-filter.
+ * Compile all rows into groups, collecting per group the snapshot-only
+ * conditions for the candidate pre-filter.
+ *
+ * Two semantics, chosen by the payload version:
+ *   legacy — a row with logic:"or" starts a new AND-group; groups OR-combine
+ *            ((A∧B) ∨ C).
+ *   v2     — a row with logic:"and" starts a new group; within a group rows
+ *            OR-combine and groups AND-combine (A ∧ (B∨C)) — the visual amber
+ *            boxes of the rebuilt builder.
  */
-function groupRows(rows: ProRowWire[], ctx: FeatCtx): { groups: Group[]; condCount: number } {
+function groupRows(
+  rows: ProRowWire[],
+  ctx: FeatCtx,
+  semantics: CondSemantics
+): { groups: Group[]; condCount: number } {
+  const splitOn: "and" | "or" = semantics === "v2" ? "and" : "or";
   const groups: Group[] = [];
   let condCount = 0;
   rows.forEach((raw, idx) => {
@@ -301,44 +382,61 @@ function groupRows(rows: ProRowWire[], ctx: FeatCtx): { groups: Group[]; condCou
       const cmp = typeof r.cmp === "string" && (EXPR_CMPS as readonly string[]).includes(r.cmp)
         ? (r.cmp as ExprCmp)
         : null;
-      if (!cmp) throw new ProCompileError(`Row ${rowIdx}: unknown operator — pick >, ≥, <, ≤, = or between`);
-      const l = nodeSql(ctx, ln);
-      const rr = nodeSql(ctx, rn);
-      const sql =
-        cmp === "between" && r2n
-          ? `(${l}) BETWEEN min((${rr}), (${nodeSql(ctx, r2n)})) AND max((${rr}), (${nodeSql(ctx, r2n)}))`
-          : `(${l}) ${CMP_SQL[cmp]} (${rr})`;
+      if (!cmp) throw new ProCompileError(`Row ${rowIdx}: unknown operator — pick >, ≥, <, ≤, =, between, crosses or within-%`);
+      let pct: number | null = null;
+      if (cmp === "withinPct") {
+        pct = Number(r.pct);
+        if (!Number.isFinite(pct) || pct <= 0 || pct > 10000) {
+          throw new ProCompileError(`Row ${rowIdx}: "within % of" needs a percent between 0 and 10000`);
+        }
+      }
       condCount++;
-      const compiled: CompiledRow = { sql, params: [] };
-      // Cheap pre-filter: both sides reference only snapshot columns.
-      if (isScalarOnly(ln) && isScalarOnly(rn) && (r2n === null || isScalarOnly(r2n))) {
+      const compiled: CompiledRow = { sql: rowSql(ctx, cmp, rowIdx, ln, rn, r2n, pct), params: [] };
+      // Cheap pre-filter: both sides reference only snapshot columns (never
+      // for crosses — they always drag in previous-bar series).
+      if (
+        cmp !== "crossAbove" &&
+        cmp !== "crossBelow" &&
+        isScalarOnly(ln) &&
+        isScalarOnly(rn) &&
+        (r2n === null || isScalarOnly(r2n))
+      ) {
         const cheapCtx: FeatCtx = { d: new Map(), w: new Map(), needsD: false, needsW: false, aliasSeq: 0 };
         const cl = nodeSql(cheapCtx, ln);
         const cr = nodeSql(cheapCtx, rn);
         if (cheapCtx.d.size + cheapCtx.w.size === 0) {
+          const cr2 = r2n ? nodeSql(cheapCtx, r2n) : null;
           const cheapSql =
-            cmp === "between" && r2n
-              ? `(${cl}) BETWEEN min((${cr}), (${nodeSql(cheapCtx, r2n)})) AND max((${cr}), (${nodeSql(cheapCtx, r2n)}))`
-              : `(${cl}) ${CMP_SQL[cmp]} (${cr})`;
-          pushCompiled(groups, compiled, { sql: cheapSql, params: [] }, r.logic);
+            cmp === "withinPct" && pct != null
+              ? `(ABS((${cl}) - (${cr})) / ABS((${cr}))) * 100.0 <= ${pct}`
+              : cmp === "between" && r2n && cr2 != null
+                ? `(${cl}) BETWEEN min((${cr}), (${cr2})) AND max((${cr}), (${cr2}))`
+                : `(${cl}) ${DIRECT_CMP_SQL[cmp]} (${cr})`;
+          pushCompiled(groups, compiled, { sql: cheapSql, params: [] }, r.logic, splitOn);
           return;
         }
       }
-      pushCompiled(groups, compiled, null, r.logic);
+      pushCompiled(groups, compiled, null, r.logic, splitOn);
       return;
     }
 
     const compiled = compileFieldRow(raw as FieldRowWire);
     if (!compiled) return;
     condCount++;
-    pushCompiled(groups, compiled, { sql: compiled.sql, params: compiled.params }, (raw as FieldRowWire).logic);
+    pushCompiled(groups, compiled, { sql: compiled.sql, params: compiled.params }, (raw as FieldRowWire).logic, splitOn);
   });
   return { groups, condCount };
 }
 
-function pushCompiled(groups: Group[], compiled: CompiledRow, cheap: CompiledRow | null, logic: unknown): void {
-  const isOr = logic === "or" && groups.length > 0;
-  if (isOr) groups.push({ all: [compiled], cheap: cheap ? [cheap] : [] });
+function pushCompiled(
+  groups: Group[],
+  compiled: CompiledRow,
+  cheap: CompiledRow | null,
+  logic: unknown,
+  splitOn: "and" | "or"
+): void {
+  const isSplit = logic === splitOn && groups.length > 0;
+  if (isSplit) groups.push({ all: [compiled], cheap: cheap ? [cheap] : [] });
   else {
     if (groups.length === 0) groups.push({ all: [], cheap: [] });
     groups[groups.length - 1].all.push(compiled);
@@ -351,10 +449,11 @@ export function compileProQuery(
   rows: ProRowWire[],
   opts: ProQueryOpts,
   cutoffs: Cutoffs,
-  restrictSymbols: string[] | null
+  restrictSymbols: string[] | null,
+  semantics: CondSemantics = "legacy"
 ): CompiledProQuery {
   const ctx: FeatCtx = { d: new Map(), w: new Map(), needsD: false, needsW: false, aliasSeq: 0 };
-  const { groups, condCount } = groupRows(rows, ctx);
+  const { groups, condCount } = groupRows(rows, ctx, semantics);
 
   // WHERE assembly
   const params: unknown[] = [];
@@ -363,17 +462,16 @@ export function compileProQuery(
     conds.push(`st."sector" = ?`);
     params.push(opts.sector);
   }
-  if (groups.length === 1) {
-    for (const g of groups[0].all) {
-      conds.push(g.sql);
-      params.push(...g.params);
-    }
-  } else if (groups.length > 1) {
+  if (groups.length > 0) {
+    // Within a group: legacy rows AND together; v2 rows are the OR-box contents.
+    // Across groups: legacy OR-combines (branch union), v2 AND-combines (boxes).
+    const groupJoin = semantics === "v2" ? " OR " : " AND ";
+    const topJoin = semantics === "v2" ? " AND " : " OR ";
     const groupSql = groups.map((g) =>
-      g.all.length === 1 ? g.all[0].sql : `(${g.all.map((x) => x.sql).join(" AND ")})`
+      g.all.length === 1 ? g.all[0].sql : `(${g.all.map((x) => x.sql).join(groupJoin)})`
     );
     for (const g of groups) for (const x of g.all) params.push(...x.params);
-    conds.push(`(${groupSql.join(" OR ")})`);
+    conds.push(groupSql.length === 1 ? groupSql[0] : `(${groupSql.join(topJoin)})`);
   }
 
   // Deepest lookback per series → trailing sessions each CTE must scan.
@@ -401,16 +499,16 @@ export function compileProQuery(
       `dRaw AS (SELECT symbol, date, open, high, low, close, volume,\n` +
         `       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rnD${ctx.d.size ? "," : ""}\n` +
         [...ctx.d.values()].map((f) => `       ${f.def} AS ${f.alias}`).join(",\n") +
-        `\n  FROM DailyBar WHERE 1=1${cutoffs.d ? ` AND date >= ?` : ""}${inClause}),`
+        `\n  FROM DailyBar WHERE 1=1${cutoffs.d ? ` AND date >= ?` : ""}${inClause})`
     );
-    ctes.push(`dLast AS (SELECT * FROM dRaw WHERE rnD = 1),`);
+    ctes.push(`dLast AS (SELECT * FROM dRaw WHERE rnD = 1)`);
   }
   if (ctx.needsW) {
     ctes.push(
       `wRaw AS (SELECT symbol, strftime('%Y-%W', date) AS wk, open, high, low, close, volume,\n` +
         `       ROW_NUMBER() OVER (PARTITION BY symbol, strftime('%Y-%W', date) ORDER BY date) AS rnW,\n` +
         `       COUNT(*) OVER (PARTITION BY symbol, strftime('%Y-%W', date)) AS nW\n` +
-        `  FROM DailyBar WHERE 1=1${cutoffs.w ? ` AND date >= ?` : ""}${inClause}),`
+        `  FROM DailyBar WHERE 1=1${cutoffs.w ? ` AND date >= ?` : ""}${inClause})`
     );
     ctes.push(
       `wAgg AS (SELECT symbol, wk,\n` +
@@ -418,18 +516,18 @@ export function compileProQuery(
         `       MAX(high) AS high, MIN(low) AS low,\n` +
         `       MAX(CASE WHEN rnW = nW THEN close END) AS close,\n` +
         `       SUM(volume) AS volume\n` +
-        `  FROM wRaw GROUP BY symbol, wk),`
+        `  FROM wRaw GROUP BY symbol, wk)`
     );
     ctes.push(
       `wF AS (SELECT symbol, wk, open, high, low, close, volume,\n` +
         `       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY wk DESC) AS rnD${ctx.w.size ? "," : ""}\n` +
         [...ctx.w.values()].map((f) => `       ${f.def} AS ${f.alias}`).join(",\n") +
-        `\n  FROM wAgg),`
+        `\n  FROM wAgg)`
     );
     ctes.push(`wLast AS (SELECT * FROM wF WHERE rnD = 1)`);
   }
 
-  const withClause = ctes.length ? `WITH ${ctes.join("\n")}` : "";
+  const withClause = ctes.length ? `WITH ${ctes.join(",\n")}` : "";
   const joins = [
     ctx.needsD ? `JOIN dLast d ON d."symbol" = st."symbol"` : "",
     ctx.needsW ? `JOIN wLast w ON w."symbol" = st."symbol"` : "",
@@ -514,9 +612,10 @@ function cutoffFor(client: QueryClient, sessions: number): Promise<string | null
 export async function proSymbolList(
   client: QueryClient,
   rows: ProRowWire[],
-  opts: ProQueryOpts
+  opts: ProQueryOpts,
+  semantics: CondSemantics = "legacy"
 ): Promise<string[]> {
-  const key = JSON.stringify([rows, opts]);
+  const key = JSON.stringify([rows, opts, semantics]);
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
     cache.delete(key);
@@ -526,13 +625,17 @@ export async function proSymbolList(
 
   // Probe compile: validates every row (throws ProCompileError) and learns
   // which CTEs the expressions need + how deep the lookbacks run.
-  const probe = compileProQuery(rows, opts, { d: null, w: null }, null);
+  const probe = compileProQuery(rows, opts, { d: null, w: null }, null, semantics);
 
-  // Candidate pre-filter from the snapshot-only rows (union across OR-groups).
-  // The active sector filter also narrows candidates — include it here so
-  // sector-scoped pro screens get the indexed scan too.
+  // Candidate pre-filter from the snapshot-only rows. The active sector filter
+  // also narrows candidates — include it here so sector-scoped pro screens
+  // get the indexed scan too.
   let restrict: string[] | null = null;
-  const { groups } = groupRows(rows, { d: new Map(), w: new Map(), needsD: false, needsW: false, aliasSeq: 0 });
+  const { groups } = groupRows(
+    rows,
+    { d: new Map(), w: new Map(), needsD: false, needsW: false, aliasSeq: 0 },
+    semantics
+  );
   if (groups.length > 0) {
     const sectorCond: CompiledRow | null =
       opts.sector && opts.sector !== "all"
@@ -542,9 +645,23 @@ export async function proSymbolList(
       sectorCond ? [...g.cheap, sectorCond] : g.cheap
     );
     const usable = groupConds.filter((c) => c.length > 0);
-    if (usable.length === groupConds.length) {
-      // Every OR-group has at least one snapshot condition → the union of
-      // their matches is a safe superset of the final result.
+    if (semantics === "v2") {
+      // Groups AND-combine: every group is required, so intersecting the
+      // group constraints that ARE available stays a safe superset — groups
+      // without snapshot conditions simply don't constrain the pre-filter.
+      if (usable.length > 0) {
+        const andSql = `SELECT st."symbol" AS symbol FROM Stock st WHERE ${usable
+          .map((c) => (c.length === 1 ? c[0].sql : `(${c.map((x) => x.sql).join(" OR ")})`))
+          .join(" AND ")}`;
+        const andParams = usable.flatMap((c) => c.flatMap((x) => x.params));
+        const cand = (await client.$queryRawUnsafe(andSql, ...andParams)) as { symbol: unknown }[];
+        const symbols = cand.map((r) => String(r.symbol));
+        if (symbols.length === 0) return [];
+        if (symbols.length <= RESTRICT_MAX) restrict = symbols;
+      }
+    } else if (usable.length === groupConds.length) {
+      // Legacy union: every OR-group must contribute its snapshot condition,
+      // else its members can't be enumerated and no restriction is safe.
       const unionSql = `SELECT st."symbol" AS symbol FROM Stock st WHERE ${usable
         .map((c) => (c.length === 1 ? c[0].sql : `(${c.map((x) => x.sql).join(" AND ")})`))
         .join(" OR ")}`;
@@ -560,7 +677,7 @@ export async function proSymbolList(
   if (probe.needsD && probe.sessionsD > 0) cutoffs.d = await cutoffFor(client, probe.sessionsD);
   if (probe.needsW && probe.sessionsW > 0) cutoffs.w = await cutoffFor(client, probe.sessionsW);
 
-  const compiled = compileProQuery(rows, opts, cutoffs, restrict);
+  const compiled = compileProQuery(rows, opts, cutoffs, restrict, semantics);
   const out = await client.$queryRawUnsafe(compiled.sql, ...compiled.params);
   const symbols = (out as { symbol: unknown }[]).map((r) => String(r.symbol));
 

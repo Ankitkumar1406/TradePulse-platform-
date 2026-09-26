@@ -67,6 +67,53 @@ export async function POST(req: Request) {
   return NextResponse.json({ screen });
 }
 
+/** Update a saved screen (rename and/or replace its definition).
+ *  Body: { id, name?, definition? } — both optional, at least one required. */
+export async function PATCH(req: Request) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  let body: { id?: unknown; name?: unknown; definition?: unknown };
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  const id = typeof body.id === "string" ? body.id : "";
+  if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
+
+  const existing = await db.savedScreen.findUnique({ where: { id } });
+  if (!existing || existing.userId !== session.user.id) {
+    return NextResponse.json({ error: "Screen not found" }, { status: 404 });
+  }
+
+  const data: { name?: string; definition?: string } = {};
+  if (body.name !== undefined) {
+    const name = typeof body.name === "string" ? body.name.trim().slice(0, MAX_NAME) : "";
+    if (!name) return NextResponse.json({ error: "Give the screen a name" }, { status: 400 });
+    data.name = name;
+  }
+  if (body.definition !== undefined) {
+    let definition: string;
+    try {
+      definition = JSON.stringify(body.definition);
+    } catch {
+      return NextResponse.json({ error: "Definition must be JSON-serializable" }, { status: 400 });
+    }
+    if (definition.length > MAX_DEFINITION) {
+      return NextResponse.json({ error: "Screen definition too large" }, { status: 400 });
+    }
+    data.definition = definition;
+  }
+  if (Object.keys(data).length === 0) {
+    return NextResponse.json({ error: "Nothing to update" }, { status: 400 });
+  }
+
+  const screen = await db.savedScreen.update({ where: { id }, data });
+  return NextResponse.json({ screen });
+}
+
 /** Delete a screen. Query: ?id=<screenId> (must belong to the caller). */
 export async function DELETE(req: Request) {
   const session = await getServerSession(authOptions);
