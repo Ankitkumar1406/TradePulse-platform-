@@ -2,6 +2,9 @@
  * In-process scheduler:
  *  - daily EOD auto-update at 16:00 IST Mon–Fri (IST = UTC+5:30, no DST)
  *  - boot catch-up (server restarted after the 4 pm mark with stale data)
+ *  - boot bars-wipe guard (quotes fresh but DailyBar mass-stale — e.g. the DB
+ *    was restored from an older snapshot; without this the bars trickle would
+ *    never fire and scanners/screener charts would lag until the next 4 pm run)
  *  - hourly autopay renewal pass
  *
  * Pure helpers are exported for unit tests; the live timer is idempotent and
@@ -10,6 +13,8 @@
 
 import { db } from "@/lib/db";
 import { startSync } from "@/lib/sync";
+import { startBarsTrickle } from "@/lib/trickle";
+import { expectedLatestBarDate } from "@/lib/bar-sync";
 import { processDueRenewals } from "@/lib/payments";
 
 const IST_OFFSET_MIN = 330; // UTC+5:30
@@ -69,6 +74,25 @@ export function shouldCatchUp(now: Date, lastQuoteTime: Date | null, startedAt: 
   return startedAt.getTime() < boundary.getTime();
 }
 
+/**
+ * Bars-wipe guard: how many large-cap (≥ ₹1,000 Cr) priced names are behind
+ * the universe's latest EOD date. Genuine no-trade stragglers are almost all
+ * micro/SME caps, so a three-digit count among large caps means the bar store
+ * itself is stale or was rolled back — not just illiquid names missing a day.
+ */
+export async function staleLargeCapCount(expected: string): Promise<number> {
+  const rows = await db.$queryRawUnsafe<{ n: bigint }[]>(
+    `SELECT COUNT(*) AS n
+       FROM Stock s
+       LEFT JOIN (SELECT symbol, MAX(date) AS maxDate FROM DailyBar GROUP BY symbol) b
+         ON b.symbol = s.symbol
+      WHERE s.price IS NOT NULL AND s.marketCap >= 10000000000
+        AND (b.maxDate IS NULL OR b.maxDate < ?)`,
+    expected
+  );
+  return Number(rows[0]?.n ?? 0);
+}
+
 /** The armed auto-update time (ISO) or null when the scheduler is off. */
 export function nextAutoUpdateIso(): string | null {
   return g.__tpSchedulerLive && g.__tpDailyTarget ? g.__tpDailyTarget.toISOString() : null;
@@ -122,6 +146,25 @@ export function startDailySyncScheduler() {
           await startSync("daily");
         } else {
           console.log("[scheduler] data already covers the last 4:00 pm IST mark — no catch-up needed");
+        }
+
+        // Bars-wipe guard: the quote catch-up predicate above can pass while
+        // DailyBar is empty/mass-stale (quotes and bars are separate tables).
+        // Without this, charts, scanners and pro screener conditions would
+        // stay broken until the next 4 pm IST sync. The trickle is gentle
+        // (4 workers, WAL) and single-flight, so firing it here is safe even
+        // if a sync just started it.
+        const expected = await expectedLatestBarDate();
+        if (expected) {
+          const staleLarge = await staleLargeCapCount(expected);
+          if (staleLarge > 250) {
+            console.log(
+              `[scheduler] ${staleLarge} large-cap symbols behind ${expected} — starting bars trickle catch-up`
+            );
+            startBarsTrickle();
+          } else {
+            console.log(`[scheduler] bars fresh (stale large-caps: ${staleLarge})`);
+          }
         }
       } catch (e) {
         console.error("[scheduler] catch-up check failed:", e instanceof Error ? e.message : e);
