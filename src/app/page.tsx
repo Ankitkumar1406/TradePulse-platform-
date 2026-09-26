@@ -22,6 +22,7 @@ import { AlertsTab } from "@/components/alerts-tab";
 import { JournalTab } from "@/components/journal-tab";
 import { CalendarTab } from "@/components/calendar-tab";
 import { StockDetail } from "@/components/stock-detail";
+import { StockSearch } from "@/components/stock-search";
 import { UpgradeDialog } from "@/components/upgrade-dialog";
 import { CancelDialog } from "@/components/cancel-dialog";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -92,7 +93,7 @@ export default function Home() {
     <div className="min-h-screen bg-zinc-950 text-zinc-200">
       {/* header */}
       <header className="sticky top-0 z-40 border-b border-zinc-800/80 bg-zinc-950/90 backdrop-blur">
-        <div className="mx-auto max-w-7xl px-3 sm:px-4">
+        <div className="relative mx-auto max-w-7xl px-3 sm:px-4">
           <div className="flex h-14 items-center justify-between gap-3">
             <div className="flex items-center gap-2.5">
               <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-brand shadow-md shadow-brand/25">
@@ -102,6 +103,7 @@ export default function Home() {
                 Trade<span className="text-brand-text">Pulse</span>
               </span>
             </div>
+            <StockSearch onSelectStock={onSelectStock} />
             <SyncBanner compact />
             <div className="flex items-center gap-2">
               <ThemeToggle />
