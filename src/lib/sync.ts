@@ -144,7 +144,10 @@ async function runUniversePhase() {
 
 // ---------------------------------------------------------------- closes
 
-async function runClosesPhase(opts?: { staleCutoff?: Date }) {
+/** Refresh closes/indicators for stale (or, with an explicit cutoff, all) stocks.
+ *  Exported so ops scripts can run the phase standalone — keeps the heavy
+ *  spark fetch loop out of the dev-server process (OOM precedent). */
+export async function runClosesPhase(opts?: { staleCutoff?: Date }) {
   await db.syncState.updateMany({ where: { id: "main" }, data: { phase: "closes", status: "running" } });
 
   const staleCutoff = opts?.staleCutoff ?? new Date(Date.now() - STALE_DATA_MS);
@@ -195,7 +198,7 @@ async function applySparkToStock(
     const c = spark.close[i];
     if (c != null && Number.isFinite(c)) series.push([spark.timestamp[i], c]);
   }
-  if (series.length < 30) return false;
+  if (series.length < 2) return false; // no usable series at all — computeIndicators null-safe below handles short histories (recent IPOs)
 
   const closes = series.map((s) => s[1]);
   const ind = computeIndicators(closes);

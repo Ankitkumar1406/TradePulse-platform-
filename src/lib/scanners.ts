@@ -55,6 +55,8 @@ export interface ScanDef {
   description: string;
   needsBars?: boolean;
   basic?: boolean;
+  /** When set, rows with a live RS rating below this are dropped after the run (keeps code honest to its own description). */
+  minRs?: number;
   run: () => Promise<ScanResult>;
 }
 
@@ -94,6 +96,18 @@ function withRs(run: () => Promise<ScanResult>): () => Promise<ScanResult> {
   return async () => {
     const result = await run();
     await attachRs(result.rows);
+    return result;
+  };
+}
+
+/** Wrap a run with the scan's minimum-RS promise (e.g. "RS rating 80+"): rows
+ *  whose live RS rating (stored 12M weighted, else 6M percentile) is below the
+ *  floor — or missing entirely — are dropped. Applied after attachRs so the
+ *  same universal rating the UI displays is what the filter enforces. */
+function withMinRs(minRs: number, run: () => Promise<ScanResult>): () => Promise<ScanResult> {
+  return async () => {
+    const result = await withRs(run)();
+    result.rows = result.rows.filter((r) => (r.rs ?? -1) >= minRs);
     return result;
   };
 }
@@ -187,6 +201,11 @@ async function attachRs<T extends { symbol: string }>(rows: T[]): Promise<T[]> {
   return rows;
 }
 
+/** Null-safe round to 1 decimal — a missing select field must never crash a hit() (blank column, not a 500). */
+function r1(x: number | null | undefined): number | null {
+  return x == null || !Number.isFinite(x) ? null : Number(x.toFixed(1));
+}
+
 function lastBars(bars: Bar[]): { prev: Bar; today: Bar } | null {
   if (bars.length < 3) return null;
   return { prev: bars[bars.length - 2], today: bars[bars.length - 1] };
@@ -255,7 +274,14 @@ async function scanWithBars<T extends Record<string, unknown>>(opts: {
     for (const s of batch) {
       const bars = barsMap.get(s.symbol);
       if (!bars || bars.length < opts.minBars) continue;
-      const metrics = opts.hit(s, bars);
+      // per-symbol isolation — one malformed candidate (null field, short
+      // history) must never 500 the whole scan
+      let metrics: Record<string, number | string | null> | null = null;
+      try {
+        metrics = opts.hit(s, bars);
+      } catch {
+        metrics = null;
+      }
       if (!metrics) continue;
       rows.push({
         symbol: s.symbol, name: s.name, price: s.price, changePct: s.changePct,
@@ -384,7 +410,7 @@ const chartPatternScans: ScanDef[] = [
           const close = bars[n - 1].close;
           if (h10 == null || l10 == null || h10 <= l10) return null;
           if ((close - l10) / (h10 - l10) < 0.75) return null;
-          if ((s.fromHighPct as number) > 15) return null; // too far below the 52w high
+          if (s.fromHighPct == null || (s.fromHighPct as number) > 15) return null; // too far below the 52w high (unknown ⇒ exclude)
           return { tightRange5: Number(r5.toFixed(2)), fromHighPct: s.fromHighPct as number };
         },
         columns: [
@@ -411,7 +437,7 @@ const chartPatternScans: ScanDef[] = [
           const close = weekly[n - 1].close;
           if (h5 == null || l5 == null || h5 <= l5) return null;
           if ((close - l5) / (h5 - l5) < 0.75) return null;
-          if ((s.fromHighPct as number) > 15) return null; // too far below the 52w high
+          if (s.fromHighPct == null || (s.fromHighPct as number) > 15) return null; // too far below the 52w high (unknown ⇒ exclude)
           return { tightRange5: Number(r5.toFixed(2)), fromHighPct: s.fromHighPct as number };
         },
         columns: [
@@ -1119,7 +1145,7 @@ function volAvg(bars: Bar[], from: number, to: number): number {
 
 const traderChoiceScans: ScanDef[] = [
   {
-    id: "trader-choice-1", name: "Trader Choice 1", category: "Trader Choice", needsBars: true,
+    id: "trader-choice-1", name: "Trader Choice 1", category: "Trader Choice", needsBars: true, minRs: 80,
     description: "Momentum & breakout setup — RS rating 80+, within 12% of the 52-week high, a tightening 10-day coil, stacked 20>50 EMAs and above-average volume.",
     run: () =>
       scanWithBars({
@@ -1127,7 +1153,7 @@ const traderChoiceScans: ScanDef[] = [
         select: { fromHighPct: true, mom6M: true },
         hit: (s, bars) => {
           const n = bars.length;
-          if ((s.fromHighPct as number) > 12) return null; // too far below the 52w high
+          if (s.fromHighPct == null || (s.fromHighPct as number) > 12) return null; // too far below the 52w high
           const r10 = rangePct(bars, n - 10, n);
           if (r10 == null || r10 > 12) return null;
           const closes = bars.map((b) => b.close);
@@ -1137,9 +1163,9 @@ const traderChoiceScans: ScanDef[] = [
           const vol = volAvg(bars, n - 20, n - 1);
           if (vol > 0 && (bars[n - 1].volume || 0) < vol) return null;
           return {
-            fromHighPct: Number((s.fromHighPct as number).toFixed(1)),
+            fromHighPct: r1(s.fromHighPct as number),
             tightRange10: Number(r10.toFixed(1)),
-            mom6M: Number((s.mom6M as number).toFixed(1)),
+            mom6M: r1(s.mom6M as number),
           };
         },
         columns: [
@@ -1159,7 +1185,7 @@ const traderChoiceScans: ScanDef[] = [
         select: { fromHighPct: true },
         hit: (s, bars) => {
           const n = bars.length;
-          if ((s.fromHighPct as number) > 10) return null; // too far below the 52w high
+          if (s.fromHighPct == null || (s.fromHighPct as number) > 10) return null; // too far below the 52w high
           const closes = bars.map((b) => b.close);
           const e50 = emaLast(closes, 50);
           if (e50 == null || closes[n - 1] <= e50) return null;
@@ -1174,7 +1200,7 @@ const traderChoiceScans: ScanDef[] = [
           return {
             newHighPct: Number(((today.close / priorHigh - 1) * 100).toFixed(2)),
             prevRangePct: Number(ydayRange.toFixed(2)),
-            fromHighPct: Number((s.fromHighPct as number).toFixed(1)),
+            fromHighPct: r1(s.fromHighPct as number),
           };
         },
         columns: [
@@ -1186,7 +1212,7 @@ const traderChoiceScans: ScanDef[] = [
       }),
   },
   {
-    id: "trader-choice-3", name: "Trader Choice 3", category: "Trader Choice", needsBars: true,
+    id: "trader-choice-3", name: "Trader Choice 3", category: "Trader Choice", needsBars: true, minRs: 70,
     description: "Breakout filters — closed above the 40-day high on 1.5x volume with an RS rating of 70+ and the 20 EMA trending up.",
     run: () =>
       scanWithBars({
@@ -1207,7 +1233,7 @@ const traderChoiceScans: ScanDef[] = [
           return {
             breakoutPct: Number(((today.close / level - 1) * 100).toFixed(2)),
             volVsAvg: Number(((today.volume || 0) / avg).toFixed(2)),
-            mom6M: Number((s.mom6M as number).toFixed(1)),
+            mom6M: r1(s.mom6M as number),
           };
         },
         columns: [
@@ -1332,7 +1358,7 @@ const traderChoiceScans: ScanDef[] = [
           return {
             signals,
             tags: notes.join(" "),
-            fromHighPct: Number((s.fromHighPct as number).toFixed(1)),
+            fromHighPct: r1(s.fromHighPct as number),
           };
         },
         columns: [
@@ -1401,8 +1427,11 @@ export const RAW_SCANS: ScanDef[] = [
   ...rsScans, ...specialtyScans, ...mtfScans, ...traderChoiceScans,
 ];
 
-/** Final catalog — every scan's rows are post-processed to carry the universal RS rating. */
-export const SCANS: ScanDef[] = RAW_SCANS.map((s) => ({ ...s, run: withRs(s.run) }));
+/** Final catalog — every scan's rows are post-processed to carry the universal RS rating, and minRs promises are enforced. */
+export const SCANS: ScanDef[] = RAW_SCANS.map((s) => ({
+  ...s,
+  run: s.minRs != null ? withMinRs(s.minRs, s.run) : withRs(s.run),
+}));
 
 // ------------------------------------------------------- shared run cache
 // Scan runs hit the DB (and optionally bars) for hundreds of symbols; results
