@@ -223,15 +223,17 @@ model User {
   @@index([email])
 }
 
-// User-defined screener setups ("Create/Load Screener"). kind="conditions" is a
-// multi-condition stock filter; kind="multi" is a multi-scan confluence set.
+// User-defined screener setups ("Create/Load Screener"). kind="filters" is a
+// quick-filter view (search text / sector / sort / direction snapshot);
+// kind="conditions" is a multi-condition stock filter; kind="multi" is a
+// multi-scan confluence set.
 // definition holds the JSON payload needed to re-run the screen.
 model SavedScreen {
   id         String   @id @default(cuid())
   userId     String
   user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   name       String
-  kind       String // "conditions" | "multi"
+  kind       String // "filters" | "conditions" | "multi"
   definition String // JSON payload (condition rows or selected scan ids + min matches)
   createdAt  DateTime @default(now())
 

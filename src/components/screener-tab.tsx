@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Bookmark, ChevronDown, ChevronLeft, ChevronRight, Layers, Radar, Search, SlidersHorizontal, Star, Trash2, X,
+  Bookmark, BookmarkPlus, ChevronDown, ChevronLeft, ChevronRight, Layers, Radar, Search, SlidersHorizontal, Star, Trash2, X,
 } from "lucide-react";
 import { AddToWatchlistButton } from "@/components/add-to-watchlist";
 import { toast } from "@/hooks/use-toast";
@@ -21,6 +21,7 @@ interface StockRow {
   volume: number | null; marketCap: number | null; sector: string | null;
   rsi14: number | null; mom1M: number | null; mom3M: number | null; mom6M: number | null;
   peTTM: number | null; fromHighPct: number | null;
+  volAvg20: number | null; relVol: number | null; // volume vs prior-20-session average (API-computed)
 }
 
 interface StocksResponse {
@@ -36,7 +37,7 @@ interface ScanGroup {
 }
 
 interface SavedScreen {
-  id: string; name: string; kind: "conditions" | "multi"; definition: string; createdAt: string;
+  id: string; name: string; kind: "conditions" | "multi" | "filters"; definition: string; createdAt: string;
 }
 
 interface MultiResponse {
@@ -474,20 +475,31 @@ export function ScreenerTab({
 
   // ------------------------------------------------------------ save / load
   const [saveOpen, setSaveOpen] = useState(false);
+  const [saveAnchor, setSaveAnchor] = useState<"header" | "bar">("header");
   const [saveName, setSaveName] = useState("");
   const [saving, setSaving] = useState(false);
+
+  /** Open the name-and-save editor anchored next to the controls that define the view. */
+  const openSave = (anchor: "header" | "bar") => {
+    setSaveAnchor(anchor);
+    setSaveOpen(true);
+  };
 
   const saveScreen = async () => {
     const name = saveName.trim();
     if (!name) {
-      toast({ title: "Give the screen a name first" });
+      toast({ title: "Give the view a name first" });
       return;
     }
-    const kind = mode === "multi" ? "multi" : "conditions";
+    // Every mode is saveable: quick filters snapshot search/sector/sort/direction,
+    // the builder snapshots its condition rows, multi snapshots the scan set.
+    const kind = mode === "multi" ? "multi" : mode === "builder" ? "conditions" : "filters";
     const definition =
       kind === "multi"
         ? { ids: sel, min: minMatch }
-        : { rows: (appliedCond ?? condRows).map(toPayload) };
+        : kind === "conditions"
+          ? { rows: (appliedCond ?? condRows).map(toPayload) }
+          : { q, sector, sort, dir };
     setSaving(true);
     try {
       const res = await fetch("/api/screens", {
@@ -525,6 +537,7 @@ export function ScreenerTab({
         rows?: { f?: string; op?: string; v?: unknown; v2?: unknown }[];
         ids?: string[];
         min?: number;
+        q?: unknown; sector?: unknown; sort?: unknown; dir?: unknown;
       };
       if (s.kind === "conditions" && Array.isArray(def.rows)) {
         // Payload rows are the wire format {f, op, v, v2, logic?} — rebuild the
@@ -564,6 +577,15 @@ export function ScreenerTab({
         setMinMatch(Math.max(2, def.min ?? 2));
         setMode("multi");
         void runMulti(def.ids.slice(0, 8), Math.max(2, def.min ?? 2));
+      } else if (s.kind === "filters") {
+        // Quick-filter view: restore search text, sector, sort chip and direction.
+        const knownSort = SORTS.some((x) => x.id === def.sort);
+        setQ(typeof def.q === "string" ? def.q : "");
+        setSector(typeof def.sector === "string" && def.sector ? def.sector : "all");
+        setSort(knownSort ? (def.sort as string) : "marketCap");
+        setDir(def.dir === "asc" ? "asc" : "desc");
+        setPage(1);
+        setMode("filters");
       }
       setSavedOpen(false);
     } catch {
@@ -577,6 +599,27 @@ export function ScreenerTab({
     if (id === cur) setD(curD === "desc" ? "asc" : "desc");
     else { setS(id); setD("desc"); }
   };
+
+  /** Name-and-save editor — rendered at whichever anchor triggered it. */
+  const saveEditor = (
+    <div className="flex items-center gap-1.5">
+      <Input
+        autoFocus
+        value={saveName}
+        onChange={(e) => setSaveName(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && void saveScreen()}
+        placeholder="View name…"
+        aria-label="View name"
+        className="h-8 w-40 border-zinc-700 bg-zinc-900 text-xs text-zinc-100"
+      />
+      <Button size="sm" disabled={saving} onClick={() => void saveScreen()} className="h-8 bg-brand px-2.5 text-xs text-white hover:bg-brand-hover">
+        Save
+      </Button>
+      <button onClick={() => setSaveOpen(false)} aria-label="Cancel save" className="rounded p-1 text-zinc-500 hover:text-zinc-300">
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
 
   if (!isPro) return <ScreenerUpgradePanel onUpgrade={onUpgrade} />;
 
@@ -610,7 +653,7 @@ export function ScreenerTab({
               <div className="absolute right-0 top-9 z-30 w-72 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl">
                 {(saved ?? []).length === 0 ? (
                   <p className="px-3 py-4 text-center text-[11px] text-zinc-500">
-                    No saved screens yet — build conditions or pick scans, then Save.
+                    No saved views yet — set up quick filters, conditions or scans, then hit Save view.
                   </p>
                 ) : (
                   (saved ?? []).map((s) => (
@@ -618,7 +661,7 @@ export function ScreenerTab({
                       <button onClick={() => loadScreen(s)} className="min-w-0 flex-1 text-left">
                         <span className="block truncate text-xs font-medium text-zinc-100">{s.name}</span>
                         <span className="block text-[10px] text-zinc-500">
-                          {s.kind === "multi" ? "Multi-scan set" : "Condition screen"}
+                          {s.kind === "multi" ? "Multi-scan set" : s.kind === "filters" ? "Quick-filter view" : "Condition screen"}
                         </span>
                       </button>
                       <button
@@ -657,9 +700,10 @@ export function ScreenerTab({
                 }
                 exportCsv(
                   `tradepulse-screener-${csvDate()}.csv`,
-                  ["Symbol", "Name", "Price", "Change %", "Volume", "RSI", "1M %", "3M %", "6M %", "P/E", "From 52W high %", "Market cap Cr", "Sector"],
+                  ["Symbol", "Name", "Price", "Change %", "Volume", "Vol vs 20D avg", "RSI", "1M %", "3M %", "6M %", "P/E", "From 52W high %", "Market cap Cr", "Sector"],
                   src.stocks.map((r) => [
-                    r.symbol.replace(".NS", ""), r.name, r.price, r.changePct, r.volume, r.rsi14,
+                    r.symbol.replace(".NS", ""), r.name, r.price, r.changePct, r.volume,
+                    r.relVol != null ? Number(r.relVol.toFixed(2)) : null, r.rsi14,
                     r.mom1M, r.mom3M, r.mom6M, r.peTTM, r.fromHighPct,
                     r.marketCap != null ? Math.round(r.marketCap / 1e7) : null, r.sector,
                   ])
@@ -670,33 +714,18 @@ export function ScreenerTab({
           >
             Export CSV
           </Button>
-          {/* save current screen */}
+          {/* save current view — quick filters anchor to the filter bar; builder & multi anchor here */}
           {(mode === "builder" || mode === "multi") && (
-            saveOpen ? (
-              <div className="flex items-center gap-1.5">
-                <Input
-                  autoFocus
-                  value={saveName}
-                  onChange={(e) => setSaveName(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && void saveScreen()}
-                  placeholder="Screen name…"
-                  className="h-8 w-40 border-zinc-700 bg-zinc-900 text-xs text-zinc-100"
-                />
-                <Button size="sm" disabled={saving} onClick={() => void saveScreen()} className="h-8 bg-brand px-2.5 text-xs text-white hover:bg-brand-hover">
-                  Save
-                </Button>
-                <button onClick={() => setSaveOpen(false)} aria-label="Cancel save" className="rounded p-1 text-zinc-500 hover:text-zinc-300">
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
+            saveOpen && saveAnchor === "header" ? (
+              saveEditor
             ) : (
               <Button
-                variant="outline"
                 size="sm"
-                onClick={() => setSaveOpen(true)}
-                className="h-8 gap-1.5 border-brand/40 bg-brand/10 px-3 text-xs text-brand-text hover:bg-brand/20"
+                onClick={() => openSave("header")}
+                title="Save this screen — conditions or scan set — under a name to re-run it any day"
+                className="h-8 gap-1.5 bg-brand px-3 text-xs font-medium text-white hover:bg-brand-hover"
               >
-                <Bookmark className="h-3.5 w-3.5" /> Save screen
+                <BookmarkPlus className="h-3.5 w-3.5" /> Save view
               </Button>
             )
           )}
@@ -762,6 +791,20 @@ export function ScreenerTab({
                 </button>
               ))}
             </div>
+            {/* "Save this view" CTA — sits right on the filter bar so saving the current
+                filter combination as a named preset is obvious and one click away */}
+            {saveOpen && saveAnchor === "bar" ? (
+              saveEditor
+            ) : (
+              <Button
+                size="sm"
+                onClick={() => openSave("bar")}
+                title="Save this filter combination (search, sector, sort) under a name to reuse tomorrow"
+                className="h-8 gap-1.5 bg-brand px-2.5 text-xs font-medium text-white hover:bg-brand-hover"
+              >
+                <BookmarkPlus className="h-3.5 w-3.5" /> Save view
+              </Button>
+            )}
           </div>
 
           <ResultsTable rows={data?.stocks} isLoading={isLoading} onSelectStock={onSelectStock} />
@@ -1170,7 +1213,7 @@ function ResultsTable({
                   <th className="px-4 py-2.5 font-medium">Stock</th>
                   <th className="px-3 py-2.5 text-right font-medium">Price</th>
                   <th className="px-3 py-2.5 text-right font-medium">Chg %</th>
-                  <th className="px-3 py-2.5 text-right font-medium">Volume</th>
+                  <th className="px-3 py-2.5 text-right font-medium" title="Traded volume · multiple of its own 20-day average">Volume</th>
                   <th className="px-3 py-2.5 text-right font-medium">RSI</th>
                   <th className="px-3 py-2.5 text-right font-medium">1M</th>
                   <th className="px-3 py-2.5 text-right font-medium">3M</th>
@@ -1196,7 +1239,17 @@ function ResultsTable({
                     </td>
                     <td className="px-3 py-2.5 text-right font-mono text-xs text-zinc-200">{fmtPrice(r.price)}</td>
                     <td className={cn("px-3 py-2.5 text-right font-mono text-xs", changeColor(r.changePct))}>{fmtPct(r.changePct)}</td>
-                    <td className="px-3 py-2.5 text-right font-mono text-xs text-zinc-400">{fmtVol(r.volume)}</td>
+                    <td className="px-3 py-2.5 text-right">
+                      <div className="font-mono text-xs text-zinc-400">{fmtVol(r.volume)}</div>
+                      {r.relVol != null && (
+                        <div
+                          className={cn("font-mono text-[10px]", relVolTone(r.relVol))}
+                          title="Today's traded volume vs its 20-day average — 2× or more is spike territory"
+                        >
+                          {r.relVol >= 10 ? "10×+" : `${r.relVol.toFixed(1)}×`} avg
+                        </div>
+                      )}
+                    </td>
                     <td className={cn("px-3 py-2.5 text-right font-mono text-xs", rsiTone(r.rsi14))}>{fmtNum(r.rsi14, 1)}</td>
                     <td className={cn("px-3 py-2.5 text-right font-mono text-xs", changeColor(r.mom1M))}>{fmtPct(r.mom1M, 1)}</td>
                     <td className={cn("px-3 py-2.5 text-right font-mono text-xs", changeColor(r.mom3M))}>{fmtPct(r.mom3M, 1)}</td>
@@ -1304,6 +1357,13 @@ function Pager({ page, totalPages, onPage }: { page: number; totalPages: number;
       </div>
     </div>
   );
+}
+
+/** Relative-volume chip colour — ≥2× is spike territory (mirrors the Volume-spike scanner flag). */
+function relVolTone(rv: number): string {
+  if (rv >= 2) return "text-emerald-400";
+  if (rv >= 1.5) return "text-zinc-200";
+  return "text-zinc-500";
 }
 
 function rsiTone(rsi: number | null): string {

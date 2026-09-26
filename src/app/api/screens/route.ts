@@ -22,7 +22,8 @@ export async function GET() {
   return NextResponse.json({ screens });
 }
 
-/** Save a screen. Body: { name, kind: "conditions" | "multi", definition }. */
+/** Save a screen. Body: { name, kind: "filters" | "conditions" | "multi", definition }.
+ *  kind="filters" snapshots a Quick-filters view (search text, sector, sort, direction). */
 export async function POST(req: Request) {
   const session = await getServerSession(authOptions);
   if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -35,7 +36,10 @@ export async function POST(req: Request) {
   }
 
   const name = typeof body.name === "string" ? body.name.trim().slice(0, MAX_NAME) : "";
-  const kind = body.kind === "multi" ? "multi" : body.kind === "conditions" ? "conditions" : "";
+  const kind =
+    typeof body.kind === "string" && ["filters", "conditions", "multi"].includes(body.kind)
+      ? body.kind
+      : "";
   if (!name) return NextResponse.json({ error: "Give the screen a name" }, { status: 400 });
   if (!kind) return NextResponse.json({ error: "Unknown screen kind" }, { status: 400 });
 

@@ -149,12 +149,39 @@ export async function GET(req: Request) {
     }),
   ]);
 
+  // Relative-volume context for the visible page: each row's traded volume
+  // against its own prior-20-session average (latest stored session excluded,
+  // so neither an intraday snapshot nor the just-synced EOD bar pollutes the
+  // base). One indexed window query over the page's symbols keeps it cheap.
+  const pageSymbols = stocks.map((s) => s.symbol);
+  const volAvg = new Map<string, number>();
+  if (pageSymbols.length > 0) {
+    const rows: { symbol: string; avgVol: unknown }[] = await db.$queryRawUnsafe(
+      `SELECT symbol, AVG(volume) AS avgVol
+         FROM (SELECT symbol, volume,
+                      ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+                 FROM DailyBar WHERE symbol IN (${pageSymbols.map(() => "?").join(",")}))
+        WHERE rn BETWEEN 2 AND 21
+        GROUP BY symbol`,
+      ...pageSymbols
+    );
+    for (const r of rows) {
+      const avg = Number(r.avgVol);
+      if (Number.isFinite(avg) && avg > 0) volAvg.set(r.symbol, avg);
+    }
+  }
+  const enriched = stocks.map((s) => {
+    const volAvg20 = volAvg.get(s.symbol) ?? null;
+    const relVol = volAvg20 != null && s.volume != null && s.volume > 0 ? s.volume / volAvg20 : null;
+    return { ...s, volAvg20, relVol };
+  });
+
   return NextResponse.json({
     total,
     page,
     perPage,
     condCount,
-    stocks,
+    stocks: enriched,
     sectors: sectors.map((s) => s.sector).filter(Boolean),
   });
 }
