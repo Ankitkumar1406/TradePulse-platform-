@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 
 const MAX_SCREENS = 30;
 const MAX_NAME = 60;
-const MAX_DEFINITION = 4096; // serialized JSON budget
+const MAX_DEFINITION = 16384; // serialized JSON budget — 50 condition rows incl. pro expressions
 
 /** List the signed-in user's saved screens (newest first). */
 export async function GET() {

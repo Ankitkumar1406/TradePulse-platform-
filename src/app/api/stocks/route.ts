@@ -1,20 +1,29 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import {
+  ProCompileError,
+  ProRowWire,
+  proSymbolList,
+} from "@/lib/pro-sql";
 
 export const dynamic = "force-dynamic";
 
 /**
  * Screener / stock list. Filters over the universe with server-side paging.
  * Supports `cond` — a JSON array of condition rows for the advanced
- * multi-condition builder, e.g.
- *   [{"f":"rsi14","op":"gt","v":60},{"f":"aboveSma50","op":"eq","v":true,"logic":"or"},
- *    {"f":"mom6M","op":"between","v":10,"v2":40}]
- * All fields are whitelisted; rows AND-combine by default. A row carrying
- * logic:"or" starts a new OR-group — the chain is evaluated as
- * (AND-group 1) OR (AND-group 2) …, so A AND B OR C = (A∧B) ∨ (C).
- * SQLite stores every indicator as a column (incl. weekly RSI/MACD,
- * Bollinger %B/width and price-vs-MA distances), so the whole builder
- * compiles to one Prisma where.
+ * multi-condition builder. Two row kinds:
+ *
+ *   {"f":"rsi14","op":"gt","v":60}                      — snapshot column row
+ *   {"kind":"expr","cmp":"gte","l":"close / min(66, low)","r":"1.30"} — pro logic row
+ *
+ * Field rows AND-combine by default; a row carrying logic:"or" starts a new
+ * OR-group — the chain evaluates as (AND-group 1) OR (AND-group 2) ….
+ * Pro rows compile to a single SQLite query whose CTEs compute the referenced
+ * candle-series features (sma/min/max/lag over daily bars and weekly candles,
+ * with candles-ago / weeks-ago shifts) via window functions — see pro-sql.ts.
+ * Whenever a pro row is present the whole screen runs the pro path (field
+ * rows compile to st.* comparisons in the same query); otherwise the fast
+ * Prisma path is used. Up to 50 rows.
  */
 
 const NUMERIC_FIELDS = [
@@ -27,11 +36,14 @@ const NUMERIC_FIELDS = [
   "bbPctB", "bbWidthPct",
   "distSma20Pct", "distSma50Pct", "distSma100Pct", "distSma200Pct",
   "distEma20Pct", "distEma50Pct", "distEma100Pct", "distEma200Pct",
+  "rsRating", "epsScore",
 ] as const;
 
 const BOOLEAN_FIELDS = ["aboveSma20", "aboveSma50", "aboveSma200", "goldenCross", "volSpike", "emaCross"] as const;
 
 const OPS = ["gt", "gte", "lt", "lte", "eq", "between"] as const;
+
+export const MAX_COND_ROWS = 50;
 
 interface CondRow {
   f?: unknown;
@@ -68,6 +80,12 @@ function buildCondition(raw: CondRow): Record<string, unknown> | null {
   }
 }
 
+const STOCK_SELECT = {
+  symbol: true, name: true, price: true, changePct: true, volume: true, marketCap: true,
+  sector: true, rsi14: true, mom1M: true, mom3M: true, mom6M: true, peTTM: true,
+  fromHighPct: true, fromLowPct: true, aboveSma50: true, aboveSma200: true,
+} as const;
+
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const q = (url.searchParams.get("q") ?? "").trim();
@@ -83,7 +101,7 @@ export async function GET(req: Request) {
   ] as const;
   const sort = (allowedSorts as readonly string[]).includes(sortKey) ? sortKey : "marketCap";
 
-  const where: { AND: Record<string, unknown>[] } = {
+  const baseWhere: { AND: Record<string, unknown>[] } = {
     AND: [{ price: { not: null } }],
   };
   if (q) {
@@ -93,95 +111,127 @@ export async function GET(req: Request) {
     ];
     // SQLite Prisma `contains` is case-sensitive — provide a capitalized fallback too
     or.push({ name: { contains: q.charAt(0).toUpperCase() + q.slice(1) } });
-    where.AND.push({ OR: or });
+    baseWhere.AND.push({ OR: or });
   }
-  if (sector && sector !== "all") where.AND.push({ sector });
+  if (sector && sector !== "all") baseWhere.AND.push({ sector });
 
-  // Advanced condition builder — up to 15 rows, AND by default with OR-groups.
+  // Condition builder — up to 50 rows, AND by default with OR-groups.
   let condCount = 0;
   const condRaw = url.searchParams.get("cond");
+  let condRows: ProRowWire[] = [];
+  let hasPro = false;
   if (condRaw) {
     try {
       const parsed = JSON.parse(condRaw);
       if (Array.isArray(parsed)) {
-        // Split the chain at OR connectors: each group is a conjunction, and the
-        // groups themselves OR together — (A∧B) ∨ (C∧D) ∨ …
-        const groups: Record<string, unknown>[][] = [];
-        for (const raw of parsed.slice(0, 15)) {
-          const cond = buildCondition(raw as CondRow);
-          if (!cond) continue;
-          const isOr = (raw as CondRow).logic === "or" && groups.length > 0;
-          if (isOr) groups.push([cond]);
-          else {
-            if (groups.length === 0) groups.push([]);
-            groups[groups.length - 1].push(cond);
-          }
-          condCount++;
-        }
-        if (groups.length === 1) where.AND.push(...groups[0]);
-        else if (groups.length > 1) {
-          where.AND.push({ OR: groups.map((g) => (g.length === 1 ? g[0] : { AND: g })) });
-        }
+        condRows = parsed.slice(0, MAX_COND_ROWS) as ProRowWire[];
+        hasPro = condRows.some(
+          (r) => r != null && typeof r === "object" && (r as { kind?: unknown }).kind === "expr"
+        );
       }
     } catch {
       return NextResponse.json({ error: "Invalid cond JSON" }, { status: 400 });
     }
   }
 
-  const [total, stocks, sectors] = await Promise.all([
-    db.stock.count({ where }),
-    db.stock.findMany({
-      where,
-      orderBy: [{ [sort]: dir }, { marketCap: "desc" }],
-      skip: (page - 1) * perPage,
-      take: perPage,
-      select: {
-        symbol: true, name: true, price: true, changePct: true, volume: true, marketCap: true,
-        sector: true, rsi14: true, mom1M: true, mom3M: true, mom6M: true, peTTM: true,
-        fromHighPct: true, fromLowPct: true, aboveSma50: true, aboveSma200: true,
-      },
-    }),
-    db.stock.groupBy({
+  try {
+    let total: number;
+    let stocks: Record<string, unknown>[];
+
+    if (hasPro) {
+      // ---- pro path: compile everything into one SQL query (cached briefly)
+      const symbols = await proSymbolList(db, condRows, { sector, sort, dir });
+      total = symbols.length;
+      condCount = condRows.length;
+      const pageSymbols = symbols.slice((page - 1) * perPage, page * perPage);
+      const rows = pageSymbols.length
+        ? await db.stock.findMany({ where: { symbol: { in: pageSymbols } }, select: STOCK_SELECT })
+        : [];
+      const bySymbol = new Map(rows.map((r) => [r.symbol, r]));
+      stocks = pageSymbols
+        .map((s) => bySymbol.get(s))
+        .filter((r): r is (typeof rows)[number] => Boolean(r)) as unknown as Record<string, unknown>[];
+    } else {
+      // ---- fast path: snapshot columns only, compiled to a Prisma where
+      const where = { ...baseWhere, AND: [...baseWhere.AND] };
+      const groups: Record<string, unknown>[][] = [];
+      for (const raw of condRows) {
+        const cond = buildCondition(raw as CondRow);
+        if (!cond) continue;
+        const isOr = (raw as CondRow).logic === "or" && groups.length > 0;
+        if (isOr) groups.push([cond]);
+        else {
+          if (groups.length === 0) groups.push([]);
+          groups[groups.length - 1].push(cond);
+        }
+        condCount++;
+      }
+      if (groups.length === 1) where.AND.push(...groups[0]);
+      else if (groups.length > 1) {
+        where.AND.push({ OR: groups.map((g) => (g.length === 1 ? g[0] : { AND: g })) });
+      }
+      const [count, rows] = await Promise.all([
+        db.stock.count({ where }),
+        db.stock.findMany({
+          where,
+          orderBy: [{ [sort]: dir }, { marketCap: "desc" }],
+          skip: (page - 1) * perPage,
+          take: perPage,
+          select: STOCK_SELECT,
+        }),
+      ]);
+      total = count;
+      stocks = rows as unknown as Record<string, unknown>[];
+    }
+
+    // Relative-volume context for the visible page: each row's traded volume
+    // against its own prior-20-session average (latest stored session excluded,
+    // so neither an intraday snapshot nor the just-synced EOD bar pollutes the
+    // base). One indexed window query over the page's symbols keeps it cheap.
+    const pageSymbols = stocks.map((s) => s.symbol) as string[];
+    const volAvg = new Map<string, number>();
+    if (pageSymbols.length > 0) {
+      const rows: { symbol: string; avgVol: unknown }[] = await db.$queryRawUnsafe(
+        `SELECT symbol, AVG(volume) AS avgVol
+           FROM (SELECT symbol, volume,
+                        ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+                   FROM DailyBar WHERE symbol IN (${pageSymbols.map(() => "?").join(",")}))
+          WHERE rn BETWEEN 2 AND 21
+          GROUP BY symbol`,
+        ...pageSymbols
+      );
+      for (const r of rows) {
+        const avg = Number(r.avgVol);
+        if (Number.isFinite(avg) && avg > 0) volAvg.set(r.symbol, avg);
+      }
+    }
+    const enriched = stocks.map((s) => {
+      const volAvg20 = volAvg.get(s.symbol as string) ?? null;
+      const volume = s.volume as number | null;
+      const relVol = volAvg20 != null && volume != null && volume > 0 ? volume / volAvg20 : null;
+      return { ...s, volAvg20, relVol };
+    });
+
+    const sectors = await db.stock.groupBy({
       by: ["sector"],
       where: { sector: { notIn: ["Unknown"] } },
       _count: { symbol: true },
       orderBy: { sector: "asc" },
-    }),
-  ]);
+    });
 
-  // Relative-volume context for the visible page: each row's traded volume
-  // against its own prior-20-session average (latest stored session excluded,
-  // so neither an intraday snapshot nor the just-synced EOD bar pollutes the
-  // base). One indexed window query over the page's symbols keeps it cheap.
-  const pageSymbols = stocks.map((s) => s.symbol);
-  const volAvg = new Map<string, number>();
-  if (pageSymbols.length > 0) {
-    const rows: { symbol: string; avgVol: unknown }[] = await db.$queryRawUnsafe(
-      `SELECT symbol, AVG(volume) AS avgVol
-         FROM (SELECT symbol, volume,
-                      ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
-                 FROM DailyBar WHERE symbol IN (${pageSymbols.map(() => "?").join(",")}))
-        WHERE rn BETWEEN 2 AND 21
-        GROUP BY symbol`,
-      ...pageSymbols
-    );
-    for (const r of rows) {
-      const avg = Number(r.avgVol);
-      if (Number.isFinite(avg) && avg > 0) volAvg.set(r.symbol, avg);
+    return NextResponse.json({
+      total,
+      page,
+      perPage,
+      condCount,
+      stocks: enriched,
+      sectors: sectors.map((s) => s.sector).filter(Boolean),
+    });
+  } catch (e) {
+    if (e instanceof ProCompileError) {
+      return NextResponse.json({ error: e.message }, { status: 400 });
     }
+    console.error("[/api/stocks] pro query failed:", e);
+    return NextResponse.json({ error: "Screen failed — check the conditions" }, { status: 500 });
   }
-  const enriched = stocks.map((s) => {
-    const volAvg20 = volAvg.get(s.symbol) ?? null;
-    const relVol = volAvg20 != null && s.volume != null && s.volume > 0 ? s.volume / volAvg20 : null;
-    return { ...s, volAvg20, relVol };
-  });
-
-  return NextResponse.json({
-    total,
-    page,
-    perPage,
-    condCount,
-    stocks: enriched,
-    sectors: sectors.map((s) => s.sector).filter(Boolean),
-  });
 }

@@ -7,10 +7,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
-  Bookmark, BookmarkPlus, ChevronDown, ChevronLeft, ChevronRight, Layers, Radar, Search, SlidersHorizontal, Star, Trash2, X,
+  Bookmark, BookmarkPlus, ChevronDown, ChevronLeft, ChevronRight, FunctionSquare, Layers, Radar, Search, SlidersHorizontal, Star, Trash2, X,
 } from "lucide-react";
 import { AddToWatchlistButton } from "@/components/add-to-watchlist";
+import { ExprEditor, CHEAT_SHEET } from "@/components/expr-editor";
 import { toast } from "@/hooks/use-toast";
+import { parseProExpr } from "@/lib/pro-expr";
 import { changeColor, fmtMcap, fmtNum, fmtPct, fmtPrice, fmtVol } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -131,8 +133,42 @@ const OP_LABELS: { op: CondOp; label: string }[] = [
 const fieldLabel = (f: string) =>
   f === "ma" ? "Price vs moving average" : [...NUM_FIELDS, ...BOOL_FIELDS].find((x) => x.f === f)?.label ?? f;
 
+// ------------------------------------------------ pro logic rows (Chartink-style)
+
+/** Hard cap across simple + pro rows (raised from 15 in Task 37). */
+const MAX_COND_ROWS = 50;
+
+type ExprCmp = "gt" | "gte" | "lt" | "lte" | "eq" | "between";
+
+/** A pro-logic row: left expression 〈cmp〉 right expression (numbers are expressions too). */
+interface ExprRow {
+  id: number;
+  kind: "expr";
+  logic: "and" | "or"; // how this row joins the previous one
+  cmp: ExprCmp;
+  l: string;
+  r: string;
+  r2: string; // between only
+}
+
+type BuilderRow = CondRow | ExprRow;
+
+const EXPR_CMPS: ExprCmp[] = ["gt", "gte", "lt", "lte", "eq", "between"];
+const EXPR_CMP_LABELS: { op: ExprCmp; label: string }[] = [
+  { op: "gt", label: ">" },
+  { op: "gte", label: "≥" },
+  { op: "lt", label: "<" },
+  { op: "lte", label: "≤" },
+  { op: "eq", label: "=" },
+  { op: "between", label: "between" },
+];
+const exprCmpLabel = (c: ExprCmp) => EXPR_CMP_LABELS.find((x) => x.op === c)?.label ?? c;
+
+const isExprRow = (r: BuilderRow): r is ExprRow => (r as { kind?: unknown }).kind === "expr";
+
 // Built-in preset screens (loaded into the builder, editable afterwards).
-const PRESETS: { name: string; rows: Omit<CondRow, "id">[] }[] = [
+type PresetRow = Omit<CondRow, "id"> | Omit<ExprRow, "id">;
+const PRESETS: { name: string; rows: PresetRow[] }[] = [
   {
     name: "Momentum leaders",
     rows: [
@@ -201,6 +237,45 @@ const PRESETS: { name: string; rows: Omit<CondRow, "id">[] }[] = [
       { f: "aboveSma50", op: "eq", v: "", v2: "", bool: true, boolVal: true, logic: "and" },
     ],
   },
+  {
+    name: "Chartink · 66-day breakout (weekly calm)",
+    rows: [
+      { kind: "expr", cmp: "gte", l: "close / min(66, low)", r: "1.30", r2: "", logic: "and" },
+      { f: "marketCap", op: "gt", v: "0", v2: "", bool: false, boolVal: true, logic: "and" },
+      { f: "price", op: "gte", v: "1", v2: "", bool: false, boolVal: true, logic: "and" },
+      { kind: "expr", cmp: "gt", l: "close * sma(volume, 20)", r: "30000000", r2: "", logic: "and" },
+      { kind: "expr", cmp: "gt", l: "close", r: "sma(close, 200)", r2: "", logic: "and" },
+      { kind: "expr", cmp: "lte", l: "abs(1 week ago ((close - 1 candle ago close) / 1 candle ago close * 100))", r: "6", r2: "", logic: "and" },
+      { kind: "expr", cmp: "lte", l: "abs(2 weeks ago ((close - 1 candle ago close) / 1 candle ago close * 100))", r: "6", r2: "", logic: "and" },
+      { kind: "expr", cmp: "lte", l: "abs(3 weeks ago ((close - 1 candle ago close) / 1 candle ago close * 100))", r: "6", r2: "", logic: "and" },
+      { kind: "expr", cmp: "lt", l: "1 week ago close", r: "2 weeks ago high", r2: "", logic: "and" },
+      { kind: "expr", cmp: "gte", l: "weekly high", r: "1 week ago high", r2: "", logic: "and" },
+      { kind: "expr", cmp: "gte", l: "weekly high", r: "2 weeks ago high", r2: "", logic: "and" },
+      { kind: "expr", cmp: "gte", l: "weekly high", r: "3 weeks ago high", r2: "", logic: "and" },
+      { kind: "expr", cmp: "gte", l: "weekly high", r: "4 weeks ago high", r2: "", logic: "and" },
+    ],
+  },
+  {
+    name: "Weekly higher-highs streak",
+    rows: [
+      { kind: "expr", cmp: "gte", l: "weekly high", r: "1 week ago high", r2: "", logic: "and" },
+      { kind: "expr", cmp: "gte", l: "weekly high", r: "2 weeks ago high", r2: "", logic: "and" },
+      { kind: "expr", cmp: "gte", l: "weekly high", r: "3 weeks ago high", r2: "", logic: "and" },
+      { kind: "expr", cmp: "gte", l: "weekly high", r: "4 weeks ago high", r2: "", logic: "and" },
+      { kind: "expr", cmp: "gt", l: "weekly close", r: "sma(weekly close, 10)", r2: "", logic: "and" },
+      { f: "marketCap", op: "gte", v: "1000", v2: "", bool: false, boolVal: true, logic: "and" },
+    ],
+  },
+  {
+    name: "Trend + tight weekly swings",
+    rows: [
+      { kind: "expr", cmp: "gt", l: "close", r: "sma(close, 50)", r2: "", logic: "and" },
+      { kind: "expr", cmp: "gt", l: "sma(close, 50)", r: "sma(close, 200)", r2: "", logic: "and" },
+      { kind: "expr", cmp: "lte", l: "abs(1 week ago ((close - 1 candle ago close) / 1 candle ago close * 100))", r: "4", r2: "", logic: "and" },
+      { kind: "expr", cmp: "gte", l: "close * sma(volume, 20)", r: "10000000", r2: "", logic: "and" },
+      { kind: "expr", cmp: "gte", l: "marketCap", r: "10000000000", r2: "", logic: "and" },
+    ],
+  },
 ];
 
 // ================================================================ csv export
@@ -238,7 +313,7 @@ function ScreenerUpgradePanel({ onUpgrade }: { onUpgrade?: () => void }) {
       <ul className="mx-auto mt-5 max-w-sm space-y-1.5 text-left text-xs text-zinc-400">
         {[
           "Full-universe filters — search, sector, sort & paginate",
-          "Condition builder — stack up to 15 filters with AND / OR groups, SMA/EMA lengths, weekly indicators & Bollinger Bands",
+          "Condition builder — up to 50 filters with Chartink-style pro logic: sma / min / max, candles-ago & weeks-ago offsets, daily + weekly series in one screen",
           "Multi-scan confluence — run scans together, see which stocks fire in several",
           "Saved screens — store and re-run your setups in one click",
           "CSV export for every result table",
@@ -271,8 +346,11 @@ const SORTS = [
 
 /** Editor row → wire format. The "ma" pseudo-field resolves to its concrete distance column.
  *  Fields declared with a display scale (market cap ₹ Cr → INR) are scaled on the way out. */
-const toPayload = (r: CondRow) => {
+const toPayload = (r: BuilderRow) => {
   const logic = r.logic === "or" ? { logic: "or" } : {};
+  if (isExprRow(r)) {
+    return { kind: "expr", cmp: r.cmp, l: r.l, r: r.r, r2: r.r2, ...logic };
+  }
   if (r.bool) return { f: r.f, op: "eq", v: r.boolVal, ...logic };
   const scale = r.f === "ma" ? 1 : NUM_FIELDS.find((x) => x.f === r.f)?.scale ?? 1;
   const num = (raw: string) => (Number.isFinite(Number(raw)) ? Number(raw) * scale : raw);
@@ -284,6 +362,7 @@ const toPayload = (r: CondRow) => {
 
 let condSeq = 1;
 const newCondRow = (): CondRow => ({ id: condSeq++, f: "price", op: "gt", v: "", v2: "", bool: false, boolVal: true, logic: "and", tf: "d" });
+const newExprRow = (): ExprRow => ({ id: condSeq++, kind: "expr", logic: "and", cmp: "gte", l: "", r: "", r2: "" });
 
 export function ScreenerTab({
   onSelectStock,
@@ -350,18 +429,50 @@ export function ScreenerTab({
   });
 
   // ------------------------------------------------------------ builder mode
-  const [condRows, setCondRows] = useState<CondRow[]>([newCondRow()]);
-  const [appliedCond, setAppliedCond] = useState<CondRow[] | null>(null);
+  const [condRows, setCondRows] = useState<BuilderRow[]>([newCondRow()]);
+  const [appliedCond, setAppliedCond] = useState<BuilderRow[] | null>(null);
   const [bSort, setBSort] = useState("marketCap");
   const [bDir, setBDir] = useState<"asc" | "desc">("desc");
   const [bPage, setBPage] = useState(1);
+  // ƒx cheat sheet + caret-targeted insertion into the last-focused expression input
+  const [cheatOpen, setCheatOpen] = useState(false);
+  const exprInputRefs = useRef(new Map<string, HTMLInputElement>());
+  const lastExprFocus = useRef<string | null>(null);
+
+  const registerExprInput = (key: string, el: HTMLInputElement | null) => {
+    if (el) exprInputRefs.current.set(key, el);
+    else exprInputRefs.current.delete(key);
+  };
+
+  /** Insert a cheat-sheet token at the caret of the last-focused expression input. */
+  const insertToken = (code: string) => {
+    const key = lastExprFocus.current;
+    if (!key) {
+      toast({ title: "Click into a pro-logic expression first", description: "Then use the cheat sheet to insert snippets." });
+      return;
+    }
+    const [rowIdStr, side] = key.split(":");
+    const row = condRows.find((r) => r.id === Number(rowIdStr));
+    if (!row || !isExprRow(row)) return;
+    const cur = side === "l" ? row.l : side === "r" ? row.r : row.r2;
+    const el = exprInputRefs.current.get(key);
+    const pos = el?.selectionStart ?? cur.length;
+    const glue = cur.length > 0 && !cur.endsWith(" ") && pos > 0 && !/[(\s]$/.test(code) ? " " : "";
+    const next = cur.slice(0, pos) + (pos > 0 && !cur.slice(0, pos).endsWith(" ") ? glue : "") + code + cur.slice(pos);
+    patchRow(row.id, side === "l" ? { l: next } : side === "r" ? { r: next } : { r2: next });
+    const caret = pos + code.length + (pos > 0 ? glue.length : 0);
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(caret, caret);
+    });
+  };
 
   const condJson = useMemo(
     () => (appliedCond ? JSON.stringify(appliedCond.map(toPayload)) : null),
     [appliedCond]
   );
 
-  const { data: bData, isLoading: bLoading } = useQuery<StocksResponse>({
+  const { data: bData, isLoading: bLoading, error: bError } = useQuery<StocksResponse>({
     queryKey: ["screenerAdv", condJson, sector, bSort, bDir, bPage],
     queryFn: async () => {
       const params = new URLSearchParams({
@@ -375,8 +486,27 @@ export function ScreenerTab({
     enabled: isPro && mode === "builder" && condJson !== null,
   });
 
-  const validateRows = (rows: CondRow[]): boolean => {
+  const validateRows = (rows: BuilderRow[]): boolean => {
     for (const r of rows) {
+      if (isExprRow(r)) {
+        const sides: [string, string][] = [
+          ["left expression", r.l],
+          ["right expression", r.r],
+          ...(r.cmp === "between" ? ([["second right expression", r.r2]] as [string, string][]) : []),
+        ];
+        for (const [what, src] of sides) {
+          if (!src.trim()) {
+            toast({ title: "Check your conditions", description: `A pro-logic row is missing its ${what}.`, variant: "destructive" });
+            return false;
+          }
+          const parsed = parseProExpr(src);
+          if (!parsed.ok) {
+            toast({ title: "Check your conditions", description: parsed.error, variant: "destructive" });
+            return false;
+          }
+        }
+        continue;
+      }
       if (r.bool) continue;
       if (!Number.isFinite(Number(r.v))) {
         toast({ title: "Check your conditions", description: `"${fieldLabel(r.f)}" needs a number.`, variant: "destructive" });
@@ -404,10 +534,11 @@ export function ScreenerTab({
     setCondRows([newCondRow()]);
     setAppliedCond(null);
     setBPage(1);
+    setCheatOpen(false);
   };
 
-  const patchRow = (id: number, patch: Partial<CondRow>) =>
-    setCondRows((rows) => rows.map((r) => (r.id === id ? { ...r, ...patch } : r)));
+  const patchRow = (id: number, patch: Partial<CondRow> | Partial<ExprRow>) =>
+    setCondRows((rows) => rows.map((r) => (r.id === id ? ({ ...r, ...patch } as BuilderRow) : r)));
 
   const switchField = (row: CondRow, f: string) => {
     if (f === "ma") {
@@ -534,16 +665,34 @@ export function ScreenerTab({
   const loadScreen = (s: SavedScreen) => {
     try {
       const def = JSON.parse(s.definition) as {
-        rows?: { f?: string; op?: string; v?: unknown; v2?: unknown }[];
+        rows?: {
+          f?: string; op?: string; v?: unknown; v2?: unknown; logic?: unknown;
+          kind?: unknown; cmp?: unknown; l?: unknown; r?: unknown; r2?: unknown;
+        }[];
         ids?: string[];
         min?: number;
         q?: unknown; sector?: unknown; sort?: unknown; dir?: unknown;
       };
       if (s.kind === "conditions" && Array.isArray(def.rows)) {
-        // Payload rows are the wire format {f, op, v, v2, logic?} — rebuild the
-        // editor state, restoring the boolean flag for signal-flag fields and
-        // the AND/OR connector.
-        const toEditorRow = (raw: { f?: string; op?: string; v?: unknown; v2?: unknown; logic?: unknown }): CondRow => {
+        // Payload rows are the wire format — {f, op, v, v2, logic?} for simple
+        // rows and {kind:"expr", cmp, l, r, r2, logic?} for pro-logic rows.
+        // Rebuild the editor state, restoring the boolean flag for signal-flag
+        // fields, the pro expressions and the AND/OR connector.
+        const toEditorRow = (raw: {
+          f?: string; op?: string; v?: unknown; v2?: unknown; logic?: unknown;
+          kind?: unknown; cmp?: unknown; l?: unknown; r?: unknown; r2?: unknown;
+        }): BuilderRow => {
+          if (raw.kind === "expr") {
+            return {
+              id: condSeq++,
+              kind: "expr",
+              logic: raw.logic === "or" ? "or" : "and",
+              cmp: EXPR_CMPS.includes(raw.cmp as ExprCmp) ? (raw.cmp as ExprCmp) : "gte",
+              l: typeof raw.l === "string" ? raw.l : "",
+              r: typeof raw.r === "string" ? raw.r : "",
+              r2: typeof raw.r2 === "string" ? raw.r2 : "",
+            };
+          }
           const isBool = raw.op === "eq" && BOOL_FIELDS.some((b) => b.f === raw.f);
           // weekly OHLC wire keys fold back onto their daily field with tf="w"
           const dailyF = raw.f != null && WEEKLY_TO_DAILY[raw.f] ? WEEKLY_TO_DAILY[raw.f] : raw.f;
@@ -822,15 +971,19 @@ export function ScreenerTab({
             <CardContent className="space-y-2.5 p-3">
               <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[11px] text-zinc-500">
-                  Stack up to 15 conditions — AND all must match, OR starts an alternative branch (evaluated as groups:
-                  A AND B OR C = (A∧B) ∨ C).
+                  Stack up to 50 conditions — mix simple filters with pro-logic rows. Pro rows accept Chartink-style
+                  expressions: <code className="font-mono text-zinc-400">close / min(66, low)</code>,{" "}
+                  <code className="font-mono text-zinc-400">sma(volume, 20)</code>,{" "}
+                  <code className="font-mono text-zinc-400">1 week ago high</code>,{" "}
+                  <code className="font-mono text-zinc-400">weekly close</code>… OR starts an alternative branch
+                  (A AND B OR C = (A∧B) ∨ C).
                 </span>
                 <select
                   value=""
                   onChange={(e) => {
                     const p = PRESETS.find((x) => x.name === e.target.value);
                     if (p) {
-                      setCondRows(p.rows.map((r) => ({ ...r, id: condSeq++ })));
+                      setCondRows(p.rows.map((r) => ({ ...r, id: condSeq++ }) as BuilderRow));
                       toast({ title: `Preset loaded — “${p.name}”`, description: "Tweak the rows, then Apply." });
                     }
                   }}
@@ -842,12 +995,34 @@ export function ScreenerTab({
                 </select>
                 <Button
                   size="sm"
-                  onClick={() => setCondRows((rows) => (rows.length >= 15 ? rows : [...rows, newCondRow()]))}
-                  disabled={condRows.length >= 15}
+                  onClick={() => setCheatOpen((v) => !v)}
+                  title="Expression cheat sheet — fields, functions, offsets; click any snippet to insert it at the caret"
+                  variant="outline"
+                  className={cn(
+                    "h-8 gap-1.5 border-zinc-700 bg-zinc-900 px-2.5 text-xs text-zinc-200 hover:bg-zinc-800",
+                    cheatOpen && "border-brand/50 bg-brand/10 text-brand-text"
+                  )}
+                >
+                  <FunctionSquare className="h-3.5 w-3.5" /> ƒx
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => setCondRows((rows) => (rows.length >= MAX_COND_ROWS ? rows : [...rows, newCondRow()]))}
+                  disabled={condRows.length >= MAX_COND_ROWS}
                   variant="outline"
                   className="h-8 border-zinc-700 bg-zinc-900 px-2.5 text-xs text-zinc-200 hover:bg-zinc-800"
                 >
                   + Add condition
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() => setCondRows((rows) => (rows.length >= MAX_COND_ROWS ? rows : [...rows, newExprRow()]))}
+                  disabled={condRows.length >= MAX_COND_ROWS}
+                  variant="outline"
+                  title="Add a pro-logic row — a full expression on each side of the comparison"
+                  className="h-8 border-brand/40 bg-brand/10 px-2.5 text-xs font-medium text-brand-text hover:bg-brand/20"
+                >
+                  <FunctionSquare className="h-3.5 w-3.5" /> + Pro logic
                 </Button>
                 <Button size="sm" onClick={applyConditions} className="h-8 bg-brand px-3 text-xs text-white hover:bg-brand-hover">
                   Apply
@@ -861,6 +1036,41 @@ export function ScreenerTab({
                   Reset
                 </Button>
               </div>
+
+              {cheatOpen && (
+                <div className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
+                  <div className="mb-1.5 flex items-center justify-between">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Expression cheat sheet — click to insert at the caret</span>
+                    <button onClick={() => setCheatOpen(false)} aria-label="Close cheat sheet" className="rounded p-0.5 text-zinc-600 hover:text-zinc-300">
+                      <X className="h-3 w-3" />
+                    </button>
+                  </div>
+                  <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+                    {CHEAT_SHEET.map((g) => (
+                      <div key={g.group}>
+                        <div className="text-[10px] font-medium uppercase tracking-wider text-zinc-600">{g.group}</div>
+                        <div className="mt-1 space-y-1">
+                          {g.items.map((it) => (
+                            <button
+                              key={it.code}
+                              onClick={() => insertToken(it.code)}
+                              title={it.note}
+                              className="block w-full truncate rounded border border-zinc-800/80 bg-zinc-900/80 px-1.5 py-1 text-left font-mono text-[10px] text-zinc-300 transition-colors hover:border-brand/40 hover:text-brand-text"
+                            >
+                              {it.code}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[10px] leading-relaxed text-zinc-600">
+                    Offsets: <code className="font-mono">N candles ago</code> walks daily bars back · <code className="font-mono">N weeks ago</code> walks weekly candles back —
+                    inside “N weeks ago ( … )” a “candle” counts weekly bars. <code className="font-mono">daily</code>/<code className="font-mono">weekly</code> prefixes reset the offset.
+                    Stocks without enough bar history for a lookback simply won’t match. Pro screens run on the EOD database — adding a market-cap or price row speeds them up.
+                  </p>
+                </div>
+              )}
 
               {condRows.map((row, idx) => (
                 <div key={row.id} className="flex flex-wrap items-center gap-1.5">
@@ -882,6 +1092,51 @@ export function ScreenerTab({
                       <option value="or">OR</option>
                     </select>
                   )}
+                  {isExprRow(row) ? (
+                    <>
+                      <ExprEditor
+                        value={row.l}
+                        onChange={(v) => patchRow(row.id, { l: v })}
+                        placeholder="expression — e.g. close / min(66, low)"
+                        ariaLabel="Left expression"
+                        inputKey={`${row.id}:l`}
+                        registerInput={registerExprInput}
+                        onFocusKey={(k) => { lastExprFocus.current = k; }}
+                      />
+                      <select
+                        value={row.cmp}
+                        onChange={(e) => patchRow(row.id, { cmp: e.target.value as ExprCmp })}
+                        className="h-8 w-24 rounded-md border border-zinc-700 bg-zinc-900 px-2 text-xs text-zinc-200"
+                        aria-label="Comparison operator"
+                      >
+                        {EXPR_CMP_LABELS.map((o) => <option key={o.op} value={o.op}>{o.label}</option>)}
+                      </select>
+                      <ExprEditor
+                        value={row.r}
+                        onChange={(v) => patchRow(row.id, { r: v })}
+                        placeholder="value or expression"
+                        ariaLabel="Right expression"
+                        inputKey={`${row.id}:r`}
+                        registerInput={registerExprInput}
+                        onFocusKey={(k) => { lastExprFocus.current = k; }}
+                      />
+                      {row.cmp === "between" && (
+                        <>
+                          <span className="text-[11px] text-zinc-500">and</span>
+                          <ExprEditor
+                            value={row.r2}
+                            onChange={(v) => patchRow(row.id, { r2: v })}
+                            placeholder="value or expression"
+                            ariaLabel="Second right expression"
+                            inputKey={`${row.id}:r2`}
+                            registerInput={registerExprInput}
+                            onFocusKey={(k) => { lastExprFocus.current = k; }}
+                          />
+                        </>
+                      )}
+                    </>
+                  ) : (
+                    <>
                   <select
                     value={row.f}
                     onChange={(e) => switchField(row, e.target.value)}
@@ -982,6 +1237,8 @@ export function ScreenerTab({
                       )}
                     </>
                   )}
+                    </>
+                  )}
                   <button
                     onClick={() => setCondRows((rows) => rows.filter((r) => r.id !== row.id))}
                     aria-label="Remove condition"
@@ -1004,12 +1261,20 @@ export function ScreenerTab({
                       )}
                     >
                       {i > 0 && <b className="mr-1 font-semibold">{r.logic === "or" ? "OR" : "AND"}</b>}
-                      {r.f === "ma"
-                        ? `Price vs ${(r.maType ?? "sma").toUpperCase()} ${r.len ?? 50}`
-                        : fieldLabel(r.f)}
-                      {r.bool
-                        ? ` is ${r.boolVal ? "true" : "false"}`
-                        : ` ${OP_LABELS.find((o) => o.op === r.op)?.label ?? ""} ${r.v}${r.op === "between" ? ` and ${r.v2}` : ""}`}
+                      {isExprRow(r) ? (
+                        <span className="font-mono">
+                          {`${r.l} ${exprCmpLabel(r.cmp)} ${r.r}${r.cmp === "between" ? ` and ${r.r2}` : ""}`}
+                        </span>
+                      ) : (
+                        <>
+                          {r.f === "ma"
+                            ? `Price vs ${(r.maType ?? "sma").toUpperCase()} ${r.len ?? 50}`
+                            : fieldLabel(r.f)}
+                          {r.bool
+                            ? ` is ${r.boolVal ? "true" : "false"}`
+                            : ` ${OP_LABELS.find((o) => o.op === r.op)?.label ?? ""} ${r.v}${r.op === "between" ? ` and ${r.v2}` : ""}`}
+                        </>
+                      )}
                     </span>
                   ))}
                 </div>
@@ -1047,6 +1312,11 @@ export function ScreenerTab({
 
           {appliedCond ? (
             <>
+              {bError && (
+                <p className="rounded-md border border-loss/40 bg-loss/10 px-3 py-2 text-xs text-loss">
+                  {bError instanceof Error ? bError.message : "Screen failed — check the conditions."}
+                </p>
+              )}
               <ResultsTable rows={bData?.stocks} isLoading={bLoading} onSelectStock={onSelectStock} />
               {bData && bData.total > bData.perPage && (
                 <Pager page={bPage} totalPages={totalPages(bData.total, bData.perPage)} onPage={setBPage} />
