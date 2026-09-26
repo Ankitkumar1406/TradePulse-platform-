@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { loadSymbolBars } from "@/lib/bars";
+import { ensureFreshBars } from "@/lib/bar-sync";
 
 export const dynamic = "force-dynamic";
 
@@ -12,6 +13,10 @@ export async function GET(_req: Request, { params }: { params: Promise<{ symbol:
 
   const stock = await db.stock.findUnique({ where: { symbol } });
   if (!stock) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
+  // sync the chart with the latest synced EOD data before serving
+  // (best-effort, soft-deadlined — a slow upstream never blocks the view)
+  await ensureFreshBars(symbol);
 
   let bars: { date: string; open: number; high: number; low: number; close: number; volume: number }[] = [];
   try {

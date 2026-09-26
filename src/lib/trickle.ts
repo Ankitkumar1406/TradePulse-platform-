@@ -5,9 +5,10 @@
  */
 
 import { db } from "@/lib/db";
-import { fetchAssetProfile, fetchChart, fetchEarningsDate, fetchFinancials } from "@/lib/yahoo";
+import { fetchAssetProfile, fetchEarningsDate, fetchFinancials } from "@/lib/yahoo";
 import { STALE_DATA_MS } from "@/lib/sync";
 import { resolveTaxonomy } from "@/lib/taxonomy";
+import { syncSymbolBars, expectedLatestBarDate } from "@/lib/bar-sync";
 
 interface TrickleGlobals {
   __tpSectorTrickle?: boolean;
@@ -74,28 +75,6 @@ export function startSectorTrickle() {
   })();
 }
 
-/** Monday (UTC) anchor of the week containing the given YYYY-MM-DD date. */
-function mondayOf(dateStr: string): string {
-  const d = new Date(`${dateStr}T00:00:00Z`);
-  const monday = new Date(d);
-  monday.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
-  return monday.toISOString().slice(0, 10);
-}
-
-/** Current-week OHLC from freshly fetched bars (last week bucket, Mon-anchored). */
-function weeklyOhlc(rows: { date: string; open: number; high: number; low: number; close: number }[]) {
-  if (rows.length === 0) return null;
-  const monday = mondayOf(rows[rows.length - 1].date);
-  const wk = rows.filter((r) => r.date >= monday);
-  if (wk.length === 0) return null;
-  return {
-    wOpen: wk[0].open,
-    wHigh: Math.max(...wk.map((r) => r.high)),
-    wLow: Math.min(...wk.map((r) => r.low)),
-    wClose: wk[wk.length - 1].close,
-  };
-}
-
 // ---------------------------------------------------------------- bars
 
 export function startBarsTrickle() {
@@ -103,59 +82,82 @@ export function startBarsTrickle() {
   g.__tpBarsTrickle = true;
   void (async () => {
     try {
-      const cutoff = new Date(Date.now() - STALE_DATA_MS);
-      const pendingTotal = await db.stock.count({
-        where: { OR: [{ barsSynced: null }, { barsSynced: { lt: cutoff } }] },
-      });
-      await bumpCounters({ barsTotal: pendingTotal, barsDone: 0 });
-      const CHUNK = 6;
+      // Worker pool — the old sequential 6-chunk loop took 40+ minutes for
+      // the full universe and could die mid-pass on a server recycle,
+      // leaving charts days behind the quotes/closes data. Parallel workers
+      // finish in a few minutes.
+      const CONCURRENCY = 6;
+      let cursor = 0;
       let done = 0;
-      for (;;) {
-        const pending = await db.stock.findMany({
+
+      // Data-driven staleness: a symbol needs bars when its newest stored
+      // bar predates the universe's latest synced EOD date (or it has no
+      // bars at all). This deliberately ignores barsSynced — the old
+      // timestamp-only predicate let a failed fetch pass as "synced" and
+      // hide stale charts for a whole day.
+      const expected = await expectedLatestBarDate();
+      let batch: { symbol: string }[];
+      if (expected) {
+        const rows = await db.$queryRawUnsafe<{ symbol: string }[]>(`
+          SELECT s.symbol
+            FROM Stock s
+            LEFT JOIN (SELECT symbol, MAX(date) AS maxDate FROM DailyBar GROUP BY symbol) b
+              ON b.symbol = s.symbol
+           WHERE s.price IS NOT NULL AND (b.maxDate IS NULL OR b.maxDate < ?)
+           ORDER BY s.marketCap DESC`,
+          expected
+        );
+        batch = rows;
+      } else {
+        // universe never synced — fall back to the timestamp predicate
+        const cutoff = new Date(Date.now() - STALE_DATA_MS);
+        batch = await db.stock.findMany({
           where: { OR: [{ barsSynced: null }, { barsSynced: { lt: cutoff } }] },
           select: { symbol: true },
           orderBy: { marketCap: "desc" },
-          take: CHUNK,
         });
-        if (pending.length === 0) break;
-        for (const s of pending) {
-          try {
-            const chart = await fetchChart(s.symbol, "2y");
-            const ts = chart.timestamp;
-            const q = chart.indicators.quote[0];
-            const rows: { symbol: string; date: string; open: number; high: number; low: number; close: number; volume: number }[] = [];
-            for (let i = 0; i < ts.length; i++) {
-              const o = q.open[i], h = q.high[i], l = q.low[i], c = q.close[i], v = q.volume[i];
-              if (o == null || h == null || l == null || c == null) continue;
-              rows.push({
-                symbol: s.symbol,
-                date: new Date(ts[i] * 1000).toISOString().slice(0, 10),
-                open: o, high: h, low: l, close: c,
-                volume: v ?? 0,
-              });
+      }
+
+      await bumpCounters({ barsTotal: batch.length, barsDone: 0 });
+      const attempted = new Set<string>();
+
+      const pickNext = () => {
+        while (cursor < batch.length) {
+          const s = batch[cursor++];
+          if (!attempted.has(s.symbol)) {
+            attempted.add(s.symbol);
+            return s;
+          }
+        }
+        return null;
+      };
+
+      const worker = async () => {
+        for (;;) {
+          const s = pickNext();
+          if (!s) return;
+          let ok = false;
+          // one retry per cycle — transient Yahoo failures are common
+          for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+            if (attempt > 0) await sleep(1200);
+            try {
+              await syncSymbolBars(s.symbol);
+              ok = true;
+            } catch {
+              // retry or leave for the next cycle — the data-driven
+              // predicate re-picks anything still behind, and a failed
+              // fetch must never look "synced" to the read path
             }
-            if (rows.length > 0) {
-              await db.$transaction([
-                db.dailyBar.deleteMany({ where: { symbol: s.symbol } }),
-                db.dailyBar.createMany({ data: rows }),
-              ]);
-            }
-            // rebuild the current-week candle alongside the bars so the
-            // screener builder's Weekly-timeframe price conditions stay fresh
-            const wk = weeklyOhlc(rows);
-            await db.stock.update({
-              where: { symbol: s.symbol },
-              data: { barsSynced: new Date(), ...(wk ?? {}) },
-            });
-          } catch {
-            // symbol failed this pass — mark so it isn't retried until next cycle
-            await db.stock.update({ where: { symbol: s.symbol }, data: { barsSynced: new Date() } }).catch(() => {});
           }
           done++;
+          if (done % 24 === 0) await bumpCounters({ barsDone: done });
         }
-        await bumpCounters({ barsDone: done });
-        await sleep(500);
+      };
+
+      if (batch.length > 0) {
+        await Promise.all(Array.from({ length: Math.min(CONCURRENCY, batch.length) }, worker));
       }
+      await bumpCounters({ barsDone: done });
     } catch (e) {
       console.error("[trickle] bars:", e instanceof Error ? e.message : e);
     } finally {
