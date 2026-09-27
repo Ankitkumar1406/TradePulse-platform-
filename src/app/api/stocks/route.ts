@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, toPgSql } from "@/lib/db";
 import {
   CondSemantics,
   ProCompileError,
@@ -208,12 +208,12 @@ export async function GET(req: Request) {
     const volAvg = new Map<string, number>();
     if (pageSymbols.length > 0) {
       const rows: { symbol: string; avgVol: unknown }[] = await db.$queryRawUnsafe(
-        `SELECT symbol, AVG(volume) AS avgVol
+        toPgSql(`SELECT symbol, AVG(volume) AS avgVol
            FROM (SELECT symbol, volume,
                         ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
-                   FROM DailyBar WHERE symbol IN (${pageSymbols.map(() => "?").join(",")}))
+                   FROM "DailyBar" WHERE symbol IN (${pageSymbols.map(() => "?").join(",")}))
           WHERE rn BETWEEN 2 AND 21
-          GROUP BY symbol`,
+          GROUP BY symbol`),
         ...pageSymbols
       );
       for (const r of rows) {

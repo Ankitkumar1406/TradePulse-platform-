@@ -11,11 +11,12 @@
  * stored on globalThis so hot reloads don't stack timers.
  */
 
-import { db } from "@/lib/db";
-import { startSync } from "@/lib/sync";
+import { db, toPgSql } from "@/lib/db";
+import { startSync, isSyncRunning } from "@/lib/sync";
 import { startBarsTrickle } from "@/lib/trickle";
 import { expectedLatestBarDate } from "@/lib/bar-sync";
 import { processDueRenewals } from "@/lib/payments";
+import { runPostSyncPipeline, isPostPipelineRunning } from "@/lib/pipeline";
 
 const IST_OFFSET_MIN = 330; // UTC+5:30
 const FIRE_UTC_H = 10; // 16:00 IST == 10:30 UTC
@@ -82,12 +83,12 @@ export function shouldCatchUp(now: Date, lastQuoteTime: Date | null, startedAt: 
  */
 export async function staleLargeCapCount(expected: string): Promise<number> {
   const rows = await db.$queryRawUnsafe<{ n: bigint }[]>(
-    `SELECT COUNT(*) AS n
-       FROM Stock s
-       LEFT JOIN (SELECT symbol, MAX(date) AS maxDate FROM DailyBar GROUP BY symbol) b
+    toPgSql(`SELECT COUNT(*) AS n
+       FROM "Stock" s
+       LEFT JOIN (SELECT symbol, MAX(date) AS maxDate FROM "DailyBar" GROUP BY symbol) b
          ON b.symbol = s.symbol
-      WHERE s.price IS NOT NULL AND s.marketCap >= 10000000000
-        AND (b.maxDate IS NULL OR b.maxDate < ?)`,
+      WHERE s.price IS NOT NULL AND s."marketCap" >= 10000000000
+        AND (b.maxDate IS NULL OR b.maxDate < ?)`),
     expected
   );
   return Number(rows[0]?.n ?? 0);
@@ -130,6 +131,29 @@ export function startDailySyncScheduler() {
     void processDueRenewals().catch(() => {});
   }, 3600 * 1000);
 
+  // 10-minute precompute sweeper — the safety net that keeps stock_metrics /
+  // scan_results in lock-step with the latest EOD session even when the bars
+  // trickle finished after the sync (or a server recycle interrupted the
+  // chain). Cheap: two tiny reads + a gate check, every 10 min.
+  setInterval(() => {
+    void (async () => {
+      try {
+        if (isSyncRunning() || isPostPipelineRunning()) return;
+        const state = await db.syncState
+          .findUnique({ where: { id: "main" }, select: { metricsDate: true } })
+          .catch(() => null);
+        const expected = await expectedLatestBarDate();
+        if (!expected || state?.metricsDate === expected) return;
+        const stale = await staleLargeCapCount(expected);
+        if (stale > 250) return; // bars still catching up — trickle first
+        console.log("[scheduler] metrics behind EOD session — running precompute pipeline");
+        await runPostSyncPipeline();
+      } catch (e) {
+        console.error("[scheduler] pipeline sweep failed:", e instanceof Error ? e.message : e);
+      }
+    })();
+  }, 10 * 60 * 1000);
+
   // Boot: renewal pass + catch-up check after a short warm-up
   setTimeout(() => {
     void processDueRenewals().catch(() => {});
@@ -164,6 +188,9 @@ export function startDailySyncScheduler() {
             startBarsTrickle();
           } else {
             console.log(`[scheduler] bars fresh (stale large-caps: ${staleLarge})`);
+            // Bars are current — if the precomputed metrics lag the session
+            // (e.g. a restore or an interrupted pipeline), build them now.
+            void runPostSyncPipeline().catch(() => {});
           }
         }
       } catch (e) {

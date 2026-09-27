@@ -5,10 +5,9 @@
  *
  *   bun run scripts/backfill-stale-bars.ts [--limit N] [--concurrency N]
  */
-import { PrismaClient } from "@prisma/client";
+import { db, toPgSql } from "../src/lib/db";
 import { syncSymbolBars, expectedLatestBarDate } from "../src/lib/bar-sync";
 
-const db = new PrismaClient();
 
 const arg = (name: string, def: number) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -28,12 +27,12 @@ async function main() {
   console.log(`expected latest EOD date: ${expected}`);
 
   const stale = await db.$queryRawUnsafe<{ symbol: string }[]>(
-    `SELECT s.symbol
-       FROM Stock s
-       LEFT JOIN (SELECT symbol, MAX(date) AS maxDate FROM DailyBar GROUP BY symbol) b
+    toPgSql(`SELECT s.symbol
+       FROM "Stock" s
+       LEFT JOIN (SELECT symbol, MAX(date) AS maxDate FROM "DailyBar" GROUP BY symbol) b
          ON b.symbol = s.symbol
       WHERE s.price IS NOT NULL AND (b.maxDate IS NULL OR b.maxDate < ?)
-      ORDER BY s.marketCap DESC`,
+      ORDER BY s."marketCap" DESC`),
     expected
   );
   const symbols = LIMIT > 0 ? stale.slice(0, LIMIT).map((r) => r.symbol) : stale.map((r) => r.symbol);

@@ -55,15 +55,15 @@ async function main() {
   if (symbols.length > 0) {
     const sym = symbols[0];
     const daily = await db.$queryRawUnsafe<{ d: unknown; c: unknown }[]>(
-      `SELECT date AS d, close AS c FROM DailyBar WHERE symbol = ? ORDER BY date DESC LIMIT 1`,
+      `SELECT date AS d, close AS c FROM "DailyBar" WHERE symbol = ? ORDER BY date DESC LIMIT 1`,
       sym
     );
     const minLow66 = await db.$queryRawUnsafe<{ m: unknown }[]>(
-      `SELECT MIN(low) AS m FROM (SELECT low FROM DailyBar WHERE symbol = ? ORDER BY date DESC LIMIT 66)`,
+      `SELECT MIN(low) AS m FROM (SELECT low FROM "DailyBar" WHERE symbol = ? ORDER BY date DESC LIMIT 66)`,
       sym
     );
     const smaVol20 = await db.$queryRawUnsafe<{ m: unknown }[]>(
-      `SELECT AVG(volume) AS m FROM (SELECT volume FROM DailyBar WHERE symbol = ? ORDER BY date DESC LIMIT 20)`,
+      `SELECT AVG(volume) AS m FROM (SELECT volume FROM "DailyBar" WHERE symbol = ? ORDER BY date DESC LIMIT 20)`,
       sym
     );
     const weeks = await db.$queryRawUnsafe<{ wk: string; o: unknown; h: unknown; l: unknown; c: unknown }[]>(
@@ -72,7 +72,7 @@ async function main() {
          FROM (SELECT symbol, strftime('%Y-%W', date) AS wk, date, open, high, low, close, volume,
                       ROW_NUMBER() OVER (PARTITION BY symbol, strftime('%Y-%W', date) ORDER BY date) AS rnW,
                       COUNT(*) OVER (PARTITION BY symbol, strftime('%Y-%W', date)) AS nW
-                 FROM DailyBar WHERE symbol = ?)
+                 FROM "DailyBar" WHERE symbol = ?)
         GROUP BY wk ORDER BY wk DESC LIMIT 6`,
       sym
     );
@@ -109,7 +109,7 @@ async function main() {
   }
 
   // ---- boolean IS 1 parity check
-  const rawCnt = await db.$queryRawUnsafe<{ n: unknown }[]>(`SELECT COUNT(*) AS n FROM Stock WHERE aboveSma50 IS 1`);
+  const rawCnt = await db.$queryRawUnsafe<{ n: unknown }[]>(`SELECT COUNT(*) AS n FROM "Stock" WHERE aboveSma50 IS 1`);
   const prmCnt = await db.stock.count({ where: { aboveSma50: true } });
   console.log(`\nboolean parity: raw IS 1 = ${Number(rawCnt[0].n)} vs prisma equals true = ${prmCnt}`);
 

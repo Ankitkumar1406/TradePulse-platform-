@@ -18,7 +18,7 @@ function dRawOnly(withCut: boolean, withIn: boolean, syms: string[]): { sql: str
 dRaw AS (SELECT symbol, date, open, high, low, close, volume,
        ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rnD,
        ${DAILY_FEATS.join(",\n       ")}
-  FROM DailyBar WHERE 1=1${withCut ? ` AND date >= ?` : ""}${inClause}),
+  FROM "DailyBar" WHERE 1=1${withCut ? ` AND date >= ?` : ""}${inClause}),
 dLast AS (SELECT * FROM dRaw WHERE rnD = 1)
 SELECT COUNT(*) AS n, AVG(f0) AS a, AVG(f1) AS b, AVG(f2) AS c FROM dLast`;
   return { sql, params: withCut ? ["2025-11-27", ...syms] : [...syms] };
@@ -49,7 +49,7 @@ async function main() {
 
   // EXPLAIN QUERY PLAN sanity for the IN case
   const plan = (await db.$queryRawUnsafe(
-    `EXPLAIN QUERY PLAN SELECT symbol FROM DailyBar WHERE symbol IN ('RELIANCE.NS','TCS.NS') ORDER BY symbol, date`
+    `EXPLAIN QUERY PLAN SELECT symbol FROM "DailyBar" WHERE symbol IN ('RELIANCE.NS','TCS.NS') ORDER BY symbol, date`
   )) as Record<string, unknown>[];
   console.log("plan IN+ORDER:", plan.map((p) => p.detail));
 

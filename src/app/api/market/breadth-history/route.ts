@@ -53,13 +53,13 @@ const g = globalThis as unknown as {
 
 const HISTORY_SQL = `
 WITH sessions AS (
-  SELECT date FROM DailyBar GROUP BY date HAVING COUNT(*) >= 800 ORDER BY date DESC LIMIT 130
+  SELECT date FROM "DailyBar" GROUP BY date HAVING COUNT(*) >= 800 ORDER BY date DESC LIMIT 130
 ),
 warm AS (
   -- 130 output sessions + 250 warm-up sessions so the SMA/high/low windows
   -- are primed before the first reported date (windows only see rows in the
   -- CTE, so filtering to 130 dates up-front corrupts the first rows).
-  SELECT date FROM DailyBar GROUP BY date HAVING COUNT(*) >= 800 ORDER BY date DESC LIMIT 380
+  SELECT date FROM "DailyBar" GROUP BY date HAVING COUNT(*) >= 800 ORDER BY date DESC LIMIT 380
 ),
 w AS (
   SELECT
@@ -70,7 +70,7 @@ w AS (
     AVG(b.close) OVER (PARTITION BY b.symbol ORDER BY b.date ROWS BETWEEN 199 PRECEDING AND CURRENT ROW) AS sma200,
     MAX(b.high) OVER (PARTITION BY b.symbol ORDER BY b.date ROWS BETWEEN 249 PRECEDING AND CURRENT ROW) AS hi250,
     MIN(b.low) OVER (PARTITION BY b.symbol ORDER BY b.date ROWS BETWEEN 249 PRECEDING AND CURRENT ROW) AS lo250
-  FROM DailyBar b
+  FROM "DailyBar" b
   WHERE b.date IN (SELECT date FROM warm)
 )
 SELECT
@@ -94,7 +94,7 @@ const SQL_VERSION = "v2";
 async function loadHistory(): Promise<{ history: HistoryRow[]; lastFullDate: string | null }> {
   // Cache key: newest full session — history only changes when a session completes.
   const lastFull = await db.$queryRawUnsafe<{ date: string }[]>(
-    `SELECT date FROM DailyBar GROUP BY date HAVING COUNT(*) >= 800 ORDER BY date DESC LIMIT 1`,
+    `SELECT date FROM "DailyBar" GROUP BY date HAVING COUNT(*) >= 800 ORDER BY date DESC LIMIT 1`,
   );
   const key = SQL_VERSION + ":" + (lastFull[0]?.date ?? "");
   const cached = g.__breadthCache;

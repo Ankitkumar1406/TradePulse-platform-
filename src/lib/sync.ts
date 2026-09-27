@@ -14,11 +14,21 @@ import { evaluateAlerts } from "@/lib/alerts";
 import { startSectorTrickle, startBarsTrickle, startEarningsTrickle, startFinancialsTrickle } from "@/lib/trickle";
 import { nextAutoUpdateIso } from "@/lib/scheduler";
 import { recomputeRatings } from "@/lib/ratings";
+import { runPostSyncPipeline } from "@/lib/pipeline";
 
 export const STALE_DATA_MS = 20 * 3600 * 1000;
 
 /** Skip the quote (universe) phase on refresh/daily when the last snapshot is younger than this. */
 export const UNIVERSE_FRESH_SKIP_MS = 2 * 3600 * 1000;
+
+/**
+ * Hard gate: a new ingest cannot start within this window after the previous
+ * successful one — Refresh clicks and page visits can never stack syncs or
+ * re-trigger the whole pipeline. Only the scheduler's own 4 pm fire (which is
+ * ≥ ~20h after the previous day's run) or an explicit admin force bypasses
+ * recent activity, and single-flight guards everything else.
+ */
+export const SYNC_MIN_INTERVAL_MS = 4 * 3600 * 1000;
 
 /** How long ago the universe snapshot was taken (max universeSynced), or Infinity when never synced. */
 async function universeFreshMs(): Promise<number> {
@@ -35,13 +45,29 @@ interface SyncGlobals {
 }
 const g = globalThis as unknown as SyncGlobals;
 
-export async function startSync(mode: SyncMode): Promise<{ started: boolean }> {
-  if (g.__tpSyncRunning) return { started: false };
+/** True while a universe sync is running (used by the pipeline sweeper). */
+export function isSyncRunning(): boolean {
+  return Boolean(g.__tpSyncRunning);
+}
+
+export async function startSync(
+  mode: SyncMode,
+  opts?: { force?: boolean }
+): Promise<{ started: boolean; reason?: string }> {
+  if (g.__tpSyncRunning) return { started: false, reason: "already-running" };
 
   const state = await db.syncState.findUnique({ where: { id: "main" } });
   const stockCount = await db.stock.count();
 
   if (stockCount === 0 && mode !== "full") mode = "full";
+
+  // Hard gate — never start a sync when a successful one just ran, unless an
+  // admin explicitly forces it. The initial full sync (empty universe) is
+  // always allowed.
+  const last = state?.lastIngestAt ?? null;
+  if (!opts?.force && stockCount > 0 && last && Date.now() - last.getTime() < SYNC_MIN_INTERVAL_MS) {
+    return { started: false, reason: "recent" };
+  }
 
   g.__tpSyncRunning = true;
   await db.syncState.upsert({
@@ -77,13 +103,34 @@ async function runSync(mode: SyncMode) {
 
     await db.syncState.updateMany({ where: { id: "main" }, data: { phase: "done", status: "done" } });
 
+    // Snapshot the read-model stats into SyncState so the status endpoint
+    // stays a single-row read (no aggregates on the polling path).
+    const [maxQuote, cnt] = await Promise.all([
+      db.stock.aggregate({ _max: { quoteTime: true } }),
+      db.stock.count(),
+    ]);
+    await db.syncState.updateMany({
+      where: { id: "main" },
+      data: {
+        lastIngestAt: new Date(),
+        lastQuoteTime: maxQuote._max.quoteTime ?? null,
+        stockCount: cnt,
+      },
+    });
+
     // Side pipelines — non-blocking background tricles
     startSectorTrickle();
     startBarsTrickle();
     startEarningsTrickle();
     startFinancialsTrickle();
-    // MarketSmith-style ratings (RS / EPS score / A-D) — background recompute
-    void recomputeRatings();
+    // MarketSmith-style ratings (RS / EPS score / A-D) — background recompute,
+    // then the precompute chain (metrics → scan results) so StockMetrics rows
+    // carry the freshly ranked ratings.
+    void recomputeRatings()
+      .then(() => runPostSyncPipeline())
+      .catch((e) =>
+        console.error("[sync] ratings/pipeline:", e instanceof Error ? e.message : e)
+      );
 
     await evaluateAlerts();
   } catch (e) {
@@ -286,11 +333,13 @@ function buildSparkUpdate(
 // ---------------------------------------------------------------- status
 
 export async function getSyncStatus() {
-  const [state, lastQuote] = await Promise.all([
-    db.syncState.findUnique({ where: { id: "main" } }),
-    db.stock.aggregate({ _max: { quoteTime: true } }),
-  ]);
-  const stockCount = await db.stock.count();
+  // Single-row read — the banner polls this every 15s and must never
+  // aggregate. lastQuoteTime/stockCount are snapshotted into SyncState at
+  // sync completion; the count() fallback covers a first boot whose row
+  // predates the snapshot fields (e.g. right after a DB migration).
+  const state = await db.syncState.findUnique({ where: { id: "main" } });
+  let stockCount = state?.stockCount ?? null;
+  if (stockCount == null) stockCount = await db.stock.count().catch(() => 0);
   return {
     phase: state?.phase ?? "idle",
     status: state?.status ?? "idle",
@@ -308,8 +357,13 @@ export async function getSyncStatus() {
     financialsDone: state?.financialsDone ?? 0,
     ratingsSynced: state?.ratingsSynced ? state.ratingsSynced.toISOString() : null,
     lastError: state?.lastError ?? null,
+    startedAt: state?.startedAt ? state.startedAt.toISOString() : null,
+    lastIngestAt: state?.lastIngestAt ? state.lastIngestAt.toISOString() : null,
+    metricsDate: state?.metricsDate ?? null,
+    scansDate: state?.scansDate ?? null,
+    scansSyncedAt: state?.scansSyncedAt ? state.scansSyncedAt.toISOString() : null,
     stockCount,
-    lastQuoteTime: lastQuote._max.quoteTime ? lastQuote._max.quoteTime.toISOString() : null,
+    lastQuoteTime: state?.lastQuoteTime ? state.lastQuoteTime.toISOString() : null,
     nextAutoUpdate: nextAutoUpdateIso(),
   };
 }

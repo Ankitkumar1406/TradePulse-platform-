@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -163,6 +163,9 @@ model PriceAlert {
 }
 
 // Single-row sync state for the universe pipeline.
+// Pipeline timestamps (Task 46): lastIngestAt = last successful ingest
+// completion (hard-gate for user-triggered syncs); metricsDate/scansDate =
+// the EOD session the precomputed stock_metrics / scan_results cover.
 model SyncState {
   id            String    @id @default("main")
   phase         String    @default("idle") // idle | universe | closes | sectors | done
@@ -183,6 +186,113 @@ model SyncState {
   lastError     String?
   startedAt     DateTime?
   updatedAt     DateTime  @updatedAt
+
+  // Precompute pipeline bookkeeping (denormalised so /api/sync GET is a
+  // single-row read — no aggregates on the status path).
+  lastIngestAt  DateTime? // last successful runSync completion
+  lastQuoteTime DateTime? // snapshot of MAX(Stock.quoteTime) at universe phase end
+  stockCount    Int?      // snapshot of Stock count at sync end
+  metricsDate   String?   // YYYY-MM-DD session StockMetrics covers
+  metricsSyncedAt DateTime?
+  scansDate     String?   // YYYY-MM-DD session ScanResult rows cover
+  scansSyncedAt DateTime?
+}
+
+// Precomputed derived indicators — ONE ROW PER SYMBOL PER SESSION, written by
+// the background metrics pipeline right after the nightly ingest lands
+// (never in a request path). Everything the app reads — screener fast path,
+// scanners, breadth, watchlists — treats this as the flat, wide truth:
+// a WHERE rsi14 < 30 AND sma20 > sma50 style query on an indexed table.
+// Ratings (rsRating/epsScore/adRating) are carried over from Stock after the
+// ratings recompute; price context comes from the session's own bars.
+model StockMetrics {
+  id Int @id @default(autoincrement())
+
+  symbol String // e.g. RELIANCE.NS
+  date   String // YYYY-MM-DD (IST) session the metrics are computed as-of
+
+  // --- price / volume context -------------------------------------------
+  close        Float?
+  volume       Float?
+  avgVol20     Float? // 20-session average volume
+  avgVol50     Float? // 50-session average volume
+  volVsAvg20   Float? // today's volume / avgVol20
+  turnover20Cr Float? // close × avgVol20 / 1e7 (₹ crore)
+
+  // --- moving averages ----------------------------------------------------
+  sma20  Float?
+  sma50  Float?
+  sma100 Float?
+  sma200 Float?
+  ema20  Float?
+  ema50  Float?
+  ema200 Float?
+
+  // --- oscillators ---------------------------------------------------------
+  rsi14      Float?
+  wRsi14     Float? // carried from Stock (weekly closes)
+  macd       Float?
+  macdSignal Float?
+  macdHist   Float?
+  wMacdHist  Float? // carried from Stock
+  atr14Pct   Float?
+  bbPctB     Float?
+  bbWidthPct Float?
+
+  // --- momentum ------------------------------------------------------------
+  mom1M  Float? // % return ~21 sessions
+  mom3M  Float? // ~63
+  mom6M  Float? // ~126
+  mom12M Float? // ~252
+
+  // --- 52-week positioning ---------------------------------------------------
+  high52      Float?
+  low52       Float?
+  fromHighPct Float? // % below the 52w high (0 = at the high)
+  fromLowPct  Float? // % above the 52w low
+
+  // --- boolean flags ----------------------------------------------------------
+  aboveSma20  Boolean?
+  aboveSma50  Boolean?
+  aboveSma200 Boolean?
+  goldenCross Boolean? // sma20 > sma50
+  emaCross    Boolean? // ema20 > ema50
+  volSpike    Boolean? // volume > 2× avgVol3M (from the snapshot)
+
+  // --- carried ratings (MarketSmith-style, universe-ranked) ----------------
+  rsRating  Int?    // 1-99 percentile of the 12M weighted momentum
+  rsMomentum Float? // the raw weighted 12M return the rating ranks
+  epsScore  Int?    // 1-99 composite fundamental growth percentile
+  adRating  String? // A+ … E accumulation/distribution grade
+  adRatio   Float?  // raw 13-week up-volume / down-volume ratio
+
+  computedAt DateTime @default(now())
+
+  @@unique([symbol, date])
+  @@index([date])
+  @@index([rsi14])
+  @@index([rsRating])
+  @@index([mom6M])
+  @@index([fromHighPct])
+}
+
+// Nightly-cached scanner output — all fixed scanners run once per EOD session
+// in the background; a user click then reads ONE cached row (single-digit ms)
+// instead of recomputing. resultJson holds the full wire payload (columns +
+// rows) exactly as POST /api/scanners/[id] returns it. The Condition Builder
+// keeps live computation against StockMetrics/DailyBar by design.
+model ScanResult {
+  id         Int      @id @default(autoincrement())
+  scannerId  String // e.g. trader-choice-1
+  date       String // YYYY-MM-DD (IST) data session the results are as-of
+  resultJson String // full ScanResult wire payload
+  rowCount   Int      @default(0)
+  scanned    Int      @default(0)
+  durationMs Int      @default(0)
+  computedAt DateTime @default(now())
+
+  @@unique([scannerId, date])
+  @@index([date])
 }
 
 // TradePulse user. Created on first login (Supabase Auth when configured,

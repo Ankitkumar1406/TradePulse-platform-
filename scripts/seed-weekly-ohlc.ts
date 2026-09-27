@@ -23,7 +23,7 @@ async function main() {
     SELECT symbol, date, open, high, low, close FROM (
       SELECT symbol, date, open, high, low, close,
              ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
-      FROM DailyBar
+      FROM "DailyBar"
     )
     WHERE rn <= 10
     ORDER BY symbol, date ASC

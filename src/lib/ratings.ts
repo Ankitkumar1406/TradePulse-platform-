@@ -52,9 +52,10 @@ export function adGrade(ratio: number): string {
  * Weighted 12-month RS momentum from five spot closes (t, t-63, t-126,
  * t-189, t-252). Needs at least ~6 months of history; older anchors fall
  * back to the newest available shorter window, exactly like the original
- * series-based computation.
+ * series-based computation. Exported so the stock_metrics pipeline stores
+ * the raw momentum the RS rating ranks.
  */
-function weightedRs(
+export function weightedRs(
   c0: number | null, c63: number | null, c126: number | null, c189: number | null, c252: number | null
 ): number | null {
   if (c0 == null || c63 == null || c0 <= 0 || c63 <= 0) return null;
@@ -115,7 +116,7 @@ export async function recomputeRatings(): Promise<number> {
         FROM (
           SELECT symbol, close,
                  ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
-            FROM DailyBar
+            FROM "DailyBar"
         )
        WHERE rn <= 253
        GROUP BY symbol
@@ -132,9 +133,9 @@ export async function recomputeRatings(): Promise<number> {
     // parameter limit.
     const missingRows = await db.$queryRaw<{ symbol: string; closes: string }[]>(Prisma.sql`
       SELECT s.symbol, s.closes
-        FROM Stock s
+        FROM "Stock" s
        WHERE s.price IS NOT NULL AND s.closes IS NOT NULL
-         AND NOT EXISTS (SELECT 1 FROM DailyBar d WHERE d.symbol = s.symbol)
+         AND NOT EXISTS (SELECT 1 FROM "DailyBar" d WHERE d.symbol = s.symbol)
     `);
     for (const s of missingRows) {
       let closes: number[];
@@ -189,7 +190,7 @@ export async function recomputeRatings(): Promise<number> {
       SELECT symbol, open, close, volume FROM (
         SELECT symbol, date, open, close, volume,
                ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
-        FROM DailyBar
+        FROM "DailyBar"
       )
       WHERE rn <= 65
       ORDER BY symbol, date ASC

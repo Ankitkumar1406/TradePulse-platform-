@@ -1434,22 +1434,56 @@ export const SCANS: ScanDef[] = RAW_SCANS.map((s) => ({
 }));
 
 // ------------------------------------------------------- shared run cache
-// Scan runs hit the DB (and optionally bars) for hundreds of symbols; results
-// only change with the daily EOD sync, so a short in-process cache lets the
-// scanner tab re-runs and the multi-scan confluence API reuse them.
+// Three layers, cheapest first:
+//   L1 — in-process map (15 min) for scanner-tab re-runs & confluence reuse
+//   L2 — the ScanResult table (persistent; written nightly by the precompute
+//        pipeline and lazily on a miss) so a freshly restarted server or a
+//        cold day serves scans from ONE indexed row read instead of re-running
+//   L3 — the live scan itself (never in a request path after the first run)
+
+import { currentDataDate, loadCachedScan, saveScanResult } from "@/lib/scan-store";
 
 const SCAN_CACHE_TTL = 15 * 60 * 1000;
 const scanCache = new Map<string, { at: number; result: ScanResult }>();
 
-/** Run a scan with a 15-minute in-process cache (results only change at the daily EOD sync). */
+/** Warm/refresh the L1 cache (used by the nightly precompute). */
+export function setScanCache(id: string, result: ScanResult): void {
+  scanCache.set(id, { at: Date.now(), result });
+}
+
+/** Run a scan: L1 → L2 (DB cache for the current data session) → live run. */
 export async function runScanCached(scan: ScanDef): Promise<ScanResult> {
   const hit = scanCache.get(scan.id);
   if (hit && Date.now() - hit.at < SCAN_CACHE_TTL) return hit.result;
+
+  // L2 — persistent cache keyed on the current EOD session.
+  try {
+    const dataDate = await currentDataDate();
+    if (dataDate) {
+      const cached = await loadCachedScan(scan.id, dataDate);
+      if (cached) {
+        scanCache.set(scan.id, { at: Date.now(), result: cached });
+        return cached;
+      }
+    }
+  } catch {
+    /* cache reads are best-effort — fall through to the live run */
+  }
+
+  const t0 = Date.now();
   const result = await scan.run();
+  const durationMs = Date.now() - t0;
+
   if (scanCache.size > 60) {
     for (const [k, v] of scanCache) if (Date.now() - v.at >= SCAN_CACHE_TTL) scanCache.delete(k);
   }
   scanCache.set(scan.id, { at: Date.now(), result });
+
+  // Lazy backfill: this click's run becomes tomorrow's single-row read.
+  const dataDate = await currentDataDate().catch(() => null);
+  if (dataDate) {
+    saveScanResult(scan.id, dataDate, result, durationMs).catch(() => {});
+  }
   return result;
 }
 

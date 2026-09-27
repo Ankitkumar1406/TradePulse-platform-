@@ -67,3 +67,6 @@ agent-ctx/
 worklog.md
 examples/
 tests/
+vendor/
+pgdata/
+pg-logs/

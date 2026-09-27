@@ -7,7 +7,7 @@ const db = new PrismaClient();
 
 async function main() {
   const stragglers = await db.$queryRawUnsafe<{ symbol: string; d: string }[]>(
-    `SELECT b.symbol, MAX(b.date) AS d FROM DailyBar b GROUP BY b.symbol HAVING d < '2026-09-25' ORDER BY d ASC LIMIT 12`
+    `SELECT b.symbol, MAX(b.date) AS d FROM "DailyBar" b GROUP BY b.symbol HAVING MAX(b.date) < '2026-09-25' ORDER BY d ASC LIMIT 12`
   );
   for (const { symbol, d } of stragglers) {
     try {

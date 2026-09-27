@@ -25,6 +25,7 @@ import {
   isScalarOnly,
   parseProExpr,
 } from "./pro-expr";
+import { toPgSql } from "./db";
 
 // ------------------------------------------------------------ field catalogs
 
@@ -216,7 +217,8 @@ function compileFieldRow(raw: FieldRowWire): CompiledRow | null {
 
   if (isBool) {
     if (op !== "eq") return null;
-    return { sql: `st."${f}" IS ${raw.v === true || raw.v === "true" ? "1" : "0"}`, params: [] };
+    // IS TRUE / IS FALSE works on both PostgreSQL booleans and SQLite 0/1 ints.
+    return { sql: `st."${f}" IS ${raw.v === true || raw.v === "true" ? "TRUE" : "FALSE"}`, params: [] };
   }
 
   const v = Number(raw.v);
@@ -302,7 +304,8 @@ function rowSql(
   }
   if (cmp === "between" && r2n) {
     const r2 = nodeSql(ctx, r2n);
-    return `(${l}) BETWEEN min((${r}), (${r2})) AND max((${r}), (${r2}))`;
+    // LEAST/GREATEST (PostgreSQL) — SQLite's scalar min/max don't exist there.
+    return `(${l}) BETWEEN LEAST((${r}), (${r2})) AND GREATEST((${r}), (${r2}))`;
   }
   return `(${l}) ${DIRECT_CMP_SQL[cmp]} (${r})`;
 }
@@ -410,7 +413,7 @@ function groupRows(
             cmp === "withinPct" && pct != null
               ? `(ABS((${cl}) - (${cr})) / ABS((${cr}))) * 100.0 <= ${pct}`
               : cmp === "between" && r2n && cr2 != null
-                ? `(${cl}) BETWEEN min((${cr}), (${cr2})) AND max((${cr}), (${cr2}))`
+                ? `(${cl}) BETWEEN LEAST((${cr}), (${cr2})) AND GREATEST((${cr}), (${cr2}))`
                 : `(${cl}) ${DIRECT_CMP_SQL[cmp]} (${cr})`;
           pushCompiled(groups, compiled, { sql: cheapSql, params: [] }, r.logic, splitOn);
           return;
@@ -499,16 +502,19 @@ export function compileProQuery(
       `dRaw AS (SELECT symbol, date, open, high, low, close, volume,\n` +
         `       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rnD${ctx.d.size ? "," : ""}\n` +
         [...ctx.d.values()].map((f) => `       ${f.def} AS ${f.alias}`).join(",\n") +
-        `\n  FROM DailyBar WHERE 1=1${cutoffs.d ? ` AND date >= ?` : ""}${inClause})`
+        `\n  FROM "DailyBar" WHERE 1=1${cutoffs.d ? ` AND date >= ?` : ""}${inClause})`
     );
     ctes.push(`dLast AS (SELECT * FROM dRaw WHERE rnD = 1)`);
   }
   if (ctx.needsW) {
     ctes.push(
-      `wRaw AS (SELECT symbol, strftime('%Y-%W', date) AS wk, open, high, low, close, volume,\n` +
-        `       ROW_NUMBER() OVER (PARTITION BY symbol, strftime('%Y-%W', date) ORDER BY date) AS rnW,\n` +
-        `       COUNT(*) OVER (PARTITION BY symbol, strftime('%Y-%W', date)) AS nW\n` +
-        `  FROM DailyBar WHERE 1=1${cutoffs.w ? ` AND date >= ?` : ""}${inClause})`
+      // Weekly bucket = ISO week (Monday-anchored, year-aware) — matches the
+      // app's mondayOf() weekly candles. to_char is the PostgreSQL equivalent
+      // of SQLite's strftime('%Y-%W').
+      `wRaw AS (SELECT symbol, to_char(date, 'IYYY-IW') AS wk, open, high, low, close, volume,\n` +
+        `       ROW_NUMBER() OVER (PARTITION BY symbol, to_char(date, 'IYYY-IW') ORDER BY date) AS rnW,\n` +
+        `       COUNT(*) OVER (PARTITION BY symbol, to_char(date, 'IYYY-IW')) AS nW\n` +
+        `  FROM "DailyBar" WHERE 1=1${cutoffs.w ? ` AND date >= ?` : ""}${inClause})`
     );
     ctes.push(
       `wAgg AS (SELECT symbol, wk,\n` +
@@ -547,7 +553,7 @@ export function compileProQuery(
   const sql = [
     withClause,
     `SELECT st."symbol" AS symbol`,
-    `FROM Stock st`,
+    `FROM "Stock" st`,
     joins,
     `WHERE ${whereAll}`,
     orderBy,
@@ -596,7 +602,7 @@ export function clearProCache(): void {
 
 function cutoffFor(client: QueryClient, sessions: number): Promise<string | null> {
   return client
-    .$queryRawUnsafe(`SELECT date FROM DailyBar GROUP BY date ORDER BY date DESC LIMIT 1 OFFSET ?`, sessions)
+    .$queryRawUnsafe(toPgSql(`SELECT date FROM "DailyBar" GROUP BY date ORDER BY date DESC LIMIT 1 OFFSET ?`), sessions)
     .then((cut) => {
       const row = (cut as { date?: unknown }[])[0];
       return row && typeof row.date === "string" ? row.date : null;
@@ -650,11 +656,11 @@ export async function proSymbolList(
       // group constraints that ARE available stays a safe superset — groups
       // without snapshot conditions simply don't constrain the pre-filter.
       if (usable.length > 0) {
-        const andSql = `SELECT st."symbol" AS symbol FROM Stock st WHERE ${usable
+        const andSql = `SELECT st."symbol" AS symbol FROM "Stock" st WHERE ${usable
           .map((c) => (c.length === 1 ? c[0].sql : `(${c.map((x) => x.sql).join(" OR ")})`))
           .join(" AND ")}`;
         const andParams = usable.flatMap((c) => c.flatMap((x) => x.params));
-        const cand = (await client.$queryRawUnsafe(andSql, ...andParams)) as { symbol: unknown }[];
+        const cand = (await client.$queryRawUnsafe(toPgSql(andSql), ...andParams)) as { symbol: unknown }[];
         const symbols = cand.map((r) => String(r.symbol));
         if (symbols.length === 0) return [];
         if (symbols.length <= RESTRICT_MAX) restrict = symbols;
@@ -662,11 +668,11 @@ export async function proSymbolList(
     } else if (usable.length === groupConds.length) {
       // Legacy union: every OR-group must contribute its snapshot condition,
       // else its members can't be enumerated and no restriction is safe.
-      const unionSql = `SELECT st."symbol" AS symbol FROM Stock st WHERE ${usable
+      const unionSql = `SELECT st."symbol" AS symbol FROM "Stock" st WHERE ${usable
         .map((c) => (c.length === 1 ? c[0].sql : `(${c.map((x) => x.sql).join(" AND ")})`))
         .join(" OR ")}`;
       const unionParams = usable.flatMap((c) => c.flatMap((x) => x.params));
-      const cand = (await client.$queryRawUnsafe(unionSql, ...unionParams)) as { symbol: unknown }[];
+      const cand = (await client.$queryRawUnsafe(toPgSql(unionSql), ...unionParams)) as { symbol: unknown }[];
       const symbols = cand.map((r) => String(r.symbol));
       if (symbols.length === 0) return [];
       if (symbols.length <= RESTRICT_MAX) restrict = symbols;
@@ -678,7 +684,7 @@ export async function proSymbolList(
   if (probe.needsW && probe.sessionsW > 0) cutoffs.w = await cutoffFor(client, probe.sessionsW);
 
   const compiled = compileProQuery(rows, opts, cutoffs, restrict, semantics);
-  const out = await client.$queryRawUnsafe(compiled.sql, ...compiled.params);
+  const out = await client.$queryRawUnsafe(toPgSql(compiled.sql), ...compiled.params);
   const symbols = (out as { symbol: unknown }[]).map((r) => String(r.symbol));
 
   cache.delete(key);

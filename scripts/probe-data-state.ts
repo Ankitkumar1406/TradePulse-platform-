@@ -13,14 +13,14 @@ async function main() {
 
   const dist = await db.$queryRawUnsafe<{ maxDate: string; n: bigint }[]>(
     `SELECT maxDate, COUNT(*) AS n FROM (
-       SELECT symbol, MAX(date) AS maxDate FROM DailyBar GROUP BY symbol
+       SELECT symbol, MAX(date) AS maxDate FROM "DailyBar" GROUP BY symbol
      ) GROUP BY maxDate ORDER BY maxDate DESC LIMIT 10`
   );
   console.log("per-symbol MAX(date) distribution:");
   for (const r of dist) console.log(" ", r.maxDate, Number(r.n));
 
   const qt = await db.$queryRawUnsafe<{ quoteTime: string; n: bigint }[]>(
-    `SELECT quoteTime, COUNT(*) AS n FROM Stock WHERE price IS NOT NULL GROUP BY quoteTime ORDER BY quoteTime DESC LIMIT 8`
+    `SELECT quoteTime, COUNT(*) AS n FROM "Stock" WHERE price IS NOT NULL GROUP BY quoteTime ORDER BY quoteTime DESC LIMIT 8`
   );
   console.log("Stock.quoteTime distribution (top):");
   for (const r of qt) console.log(" ", r.quoteTime, Number(r.n));

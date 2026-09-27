@@ -11,7 +11,7 @@ async function main() {
     `SELECT symbol, AVG(volume) AS avgVol, COUNT(*) AS n
        FROM (SELECT symbol, date, volume,
                     ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
-               FROM DailyBar WHERE symbol IN (${symbols.map(() => "?").join(",")}))
+               FROM "DailyBar" WHERE symbol IN (${symbols.map(() => "?").join(",")}))
       WHERE rn BETWEEN 2 AND 21
       GROUP BY symbol`,
     ...symbols
@@ -22,7 +22,7 @@ async function main() {
   }
 
   const latest: { symbol: string; d: string }[] = await db.$queryRawUnsafe(
-    `SELECT symbol, MAX(date) AS d FROM DailyBar WHERE symbol IN (${symbols.map(() => "?").join(",")}) GROUP BY symbol`,
+    `SELECT symbol, MAX(date) AS d FROM "DailyBar" WHERE symbol IN (${symbols.map(() => "?").join(",")}) GROUP BY symbol`,
     ...symbols
   );
   console.log("latest stored session per symbol:", latest);

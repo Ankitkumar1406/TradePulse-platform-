@@ -4,7 +4,7 @@
  * call repeatedly (single-flight via globalThis guards).
  */
 
-import { db } from "@/lib/db";
+import { db, toPgSql } from "@/lib/db";
 import { fetchAssetProfile, fetchEarningsDate, fetchFinancials } from "@/lib/yahoo";
 import { STALE_DATA_MS } from "@/lib/sync";
 import { resolveTaxonomy } from "@/lib/taxonomy";
@@ -99,13 +99,13 @@ export function startBarsTrickle() {
       const expected = await expectedLatestBarDate();
       let batch: { symbol: string }[];
       if (expected) {
-        const rows = await db.$queryRawUnsafe<{ symbol: string }[]>(`
-          SELECT s.symbol
-            FROM Stock s
-            LEFT JOIN (SELECT symbol, MAX(date) AS maxDate FROM DailyBar GROUP BY symbol) b
+        const rows = await db.$queryRawUnsafe<{ symbol: string }[]>(
+          toPgSql(`SELECT s.symbol
+            FROM "Stock" s
+            LEFT JOIN (SELECT symbol, MAX(date) AS maxDate FROM "DailyBar" GROUP BY symbol) b
               ON b.symbol = s.symbol
            WHERE s.price IS NOT NULL AND (b.maxDate IS NULL OR b.maxDate < ?)
-           ORDER BY s.marketCap DESC`,
+           ORDER BY s."marketCap" DESC`),
           expected
         );
         batch = rows;

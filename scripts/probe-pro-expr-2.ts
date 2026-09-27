@@ -33,12 +33,12 @@ function buildSql(dCut: string | null, wCut: string | null, symParams: number): 
 dRaw AS (SELECT symbol, date, open, high, low, close, volume,
        ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rnD,
        ${DAILY_FEATS.join(",\n       ")}
-  FROM DailyBar${dCut ? ` WHERE date >= ?` : ""}${symParams ? ` AND symbol IN (${Array.from({ length: symParams }, () => "?").join(",")})` : ""}),
+  FROM "DailyBar"${dCut ? ` WHERE date >= ?` : ""}${symParams ? ` AND symbol IN (${Array.from({ length: symParams }, () => "?").join(",")})` : ""}),
 dLast AS (SELECT * FROM dRaw WHERE rnD = 1),
 wRaw AS (SELECT symbol, strftime('%Y-%W', date) AS wk, open, high, low, close, volume,
        ROW_NUMBER() OVER (PARTITION BY symbol, strftime('%Y-%W', date) ORDER BY date) AS rnW,
        COUNT(*) OVER (PARTITION BY symbol, strftime('%Y-%W', date)) AS nW
-  FROM DailyBar${wCut ? ` WHERE date >= ?` : ""}${symParams ? ` AND symbol IN (${Array.from({ length: symParams }, () => "?").join(",")})` : ""}),
+  FROM "DailyBar"${wCut ? ` WHERE date >= ?` : ""}${symParams ? ` AND symbol IN (${Array.from({ length: symParams }, () => "?").join(",")})` : ""}),
 wAgg AS (SELECT symbol, wk,
        MAX(CASE WHEN rnW = 1 THEN open END) AS open,
        MAX(high) AS high, MIN(low) AS low,
@@ -51,7 +51,7 @@ wF AS (SELECT symbol, wk, open, high, low, close, volume,
   FROM wAgg),
 wLast AS (SELECT * FROM wF WHERE rnD = 1)
 SELECT st."symbol" AS symbol
-FROM Stock st
+FROM "Stock" st
 JOIN dLast d ON d."symbol" = st."symbol"
 JOIN wLast w ON w."symbol" = st."symbol"
 WHERE ((d."close" / d."f0")) >= (1.3)
@@ -89,7 +89,7 @@ async function timeRun(label: string, sql: string, params: unknown[], pragmas = 
 
 async function cutoffFor(sessions: number): Promise<string | null> {
   const r = await db.$queryRawUnsafe<{ date: string }[]>(
-    `SELECT date FROM DailyBar GROUP BY date ORDER BY date DESC LIMIT 1 OFFSET ?`,
+    `SELECT date FROM "DailyBar" GROUP BY date ORDER BY date DESC LIMIT 1 OFFSET ?`,
     sessions
   );
   return r[0]?.date ?? null;
