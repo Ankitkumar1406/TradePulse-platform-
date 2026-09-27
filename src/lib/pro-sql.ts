@@ -511,9 +511,9 @@ export function compileProQuery(
       // Weekly bucket = ISO week (Monday-anchored, year-aware) — matches the
       // app's mondayOf() weekly candles. to_char is the PostgreSQL equivalent
       // of SQLite's strftime('%Y-%W').
-      `wRaw AS (SELECT symbol, to_char(date, 'IYYY-IW') AS wk, open, high, low, close, volume,\n` +
-        `       ROW_NUMBER() OVER (PARTITION BY symbol, to_char(date, 'IYYY-IW') ORDER BY date) AS rnW,\n` +
-        `       COUNT(*) OVER (PARTITION BY symbol, to_char(date, 'IYYY-IW')) AS nW\n` +
+      `wRaw AS (SELECT symbol, to_char(date::date, 'IYYY-IW') AS wk, open, high, low, close, volume,\n` +
+        `       ROW_NUMBER() OVER (PARTITION BY symbol, to_char(date::date, 'IYYY-IW') ORDER BY date) AS rnW,\n` +
+        `       COUNT(*) OVER (PARTITION BY symbol, to_char(date::date, 'IYYY-IW')) AS nW\n` +
         `  FROM "DailyBar" WHERE 1=1${cutoffs.w ? ` AND date >= ?` : ""}${inClause})`
     );
     ctes.push(
