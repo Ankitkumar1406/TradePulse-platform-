@@ -545,10 +545,13 @@ export function compileProQuery(
 
   const dir = opts.dir === "asc" ? "ASC" : "DESC";
   const sort = (PRO_SORTS as readonly string[]).includes(opts.sort) ? opts.sort : "marketCap";
+  // PostgreSQL sorts NULLS FIRST on DESC — without NULLS LAST the pro screener's
+  // first page would be the ~1,000 rows Yahoo carries no market cap/PE for.
+  const nl = dir === "DESC" ? " NULLS LAST" : "";
   const orderBy =
     sort === "marketCap"
-      ? `ORDER BY st."marketCap" ${dir}`
-      : `ORDER BY st."${sort}" ${dir}, st."marketCap" DESC`;
+      ? `ORDER BY st."marketCap" ${dir}${nl}`
+      : `ORDER BY st."${sort}" ${dir}${nl}, st."marketCap" DESC NULLS LAST`;
 
   const sql = [
     withClause,

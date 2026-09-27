@@ -303,10 +303,22 @@ export async function fetchAssetProfile(symbol: string): Promise<AssetProfile | 
 }
 
 export interface CalendarEvents {
-  earnings?: { earningsDate?: { startDate?: string }[] };
+  earnings?: { earningsDate?: { startDate?: string; raw?: number; fmt?: string }[] };
 }
 
-export async function fetchEarningsDate(symbol: string): Promise<Date | null> {
+/**
+ * Next (estimated) earnings date. Yahoo ships two payload shapes for
+ * `calendarEvents.earnings.earningsDate[0]`:
+ *   - US markets: `{ startDate: "2026-10-16" }`
+ *   - NSE & most others: `{ raw: 1792144800, fmt: "2026-10-16" }`
+ * The old parser only read `startDate`, so every NSE name resolved to null
+ * and the earnings-date column (plus the Earnings Gap Up / Positive Earnings
+ * scans) stayed permanently empty.
+ *
+ * Returns `undefined` on transport failure so callers can leave a stored
+ * value untouched, vs `null` for a successful "Yahoo has no date" response.
+ */
+export async function fetchEarningsDate(symbol: string): Promise<Date | null | undefined> {
   try {
     const d = await yahooFetch<{
       quoteSummary: { result: { calendarEvents?: CalendarEvents }[] };
@@ -316,10 +328,23 @@ export async function fetchEarningsDate(symbol: string): Promise<Date | null> {
       timeoutMs: 20000,
       retries: 1,
     });
-    const start = d.quoteSummary?.result?.[0]?.calendarEvents?.earnings?.earningsDate?.[0]?.startDate;
-    return start ? new Date(start) : null;
+    const ed = d.quoteSummary?.result?.[0]?.calendarEvents?.earnings?.earningsDate?.[0] as
+      | { startDate?: string; raw?: number; fmt?: string }
+      | undefined;
+    // prefer the preformatted date string; fall back to the epoch `raw`
+    const iso =
+      typeof ed?.startDate === "string"
+        ? ed.startDate
+        : typeof ed?.fmt === "string"
+          ? ed.fmt
+          : typeof ed?.raw === "number"
+            ? new Date(ed.raw * 1000).toISOString().slice(0, 10)
+            : undefined;
+    if (!iso) return null;
+    const dt = new Date(`${iso.slice(0, 10)}T00:00:00Z`);
+    return Number.isNaN(dt.getTime()) ? null : dt;
   } catch {
-    return null;
+    return undefined; // transport error — do NOT let callers wipe a good value
   }
 }
 

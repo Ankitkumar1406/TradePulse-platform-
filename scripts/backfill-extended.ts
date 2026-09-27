@@ -15,7 +15,7 @@ async function main() {
   const stocks = await db.stock.findMany({
     where: { closes: { not: null } },
     select: { symbol: true, closes: true },
-    orderBy: { marketCap: "desc" },
+    orderBy: { marketCap: { sort: "desc", nulls: "last" } },
   });
   console.log(`Backfilling extended indicators for ${stocks.length} stocks…`);
 

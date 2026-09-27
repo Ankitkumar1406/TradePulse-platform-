@@ -11,7 +11,7 @@
  * Result is cached for 6 h (EOD platform — data moves once a day).
  */
 
-import { db } from "@/lib/db";
+import { db, descNullsLast } from "@/lib/db";
 import { fetchChart } from "@/lib/yahoo";
 import { rsi } from "@/lib/indicators";
 import { classifyMomentum, momentumSort, type MomentumClass, type MomentumRow } from "@/lib/momentum-classes";
@@ -131,7 +131,7 @@ async function computeSectorRows(): Promise<MomentumRow[]> {
     if (!sector) continue;
     const top = await db.stock.findMany({
       where: { sector, closes: { not: null }, price: { not: null } },
-      orderBy: { marketCap: "desc" },
+      orderBy: descNullsLast("marketCap"),
       take: PER_SECTOR,
       select: { name: true, closes: true, price: true, prevClose: true },
     });

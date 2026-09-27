@@ -32,7 +32,7 @@ async function main() {
        LEFT JOIN (SELECT symbol, MAX(date) AS maxDate FROM "DailyBar" GROUP BY symbol) b
          ON b.symbol = s.symbol
       WHERE s.price IS NOT NULL AND (b.maxDate IS NULL OR b.maxDate < ?)
-      ORDER BY s."marketCap" DESC`),
+      ORDER BY s."marketCap" DESC NULLS LAST`),
     expected
   );
   const symbols = LIMIT > 0 ? stale.slice(0, LIMIT).map((r) => r.symbol) : stale.map((r) => r.symbol);

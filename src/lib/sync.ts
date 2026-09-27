@@ -7,7 +7,7 @@
  * Single-flight: one sync at a time (globalThis guard + SyncState row).
  */
 
-import { db } from "@/lib/db";
+import { db, descNullsLast } from "@/lib/db";
 import { fetchUniversePage, fetchSpark, type ScreenerQuote, type SparkPoint } from "@/lib/yahoo";
 import { computeIndicators, computeExtendedIndicators } from "@/lib/indicators";
 import { evaluateAlerts } from "@/lib/alerts";
@@ -167,13 +167,17 @@ async function runUniversePageLoop() {
 
 async function upsertQuotes(quotes: ScreenerQuote[]) {
   const now = new Date();
+  // NSE's test instruments (011NSETEST.NS …) leak through the Yahoo screener
+  // payload with live-looking prices — they are not tradable and render as
+  // garbage rows with every column blank. Never let them into the universe.
+  const junk = /NSETEST/i;
   // One transaction per page: 250 rows commit together instead of 250 separate
   // WAL commits. Keeps write-lock churn low so API readers never queue behind
   // the sync (the pre-batching version fired 3,548 individual upserts per pass
   // and was a major contributor to the slow-page/repo-lock degradation).
   await db.$transaction(
     quotes
-      .filter((q) => Boolean(q.symbol))
+      .filter((q) => Boolean(q.symbol) && !junk.test(q.symbol))
       .map((q) => {
         const data = {
         name: q.longName || q.shortName || q.symbol,
@@ -230,7 +234,7 @@ export async function runClosesPhase(opts?: { staleCutoff?: Date }) {
   const stocks = await db.stock.findMany({
     where,
     select: { symbol: true, high52: true, low52: true, volume: true, avgVol3M: true },
-    orderBy: { marketCap: "desc" },
+    orderBy: descNullsLast("marketCap"),
   });
 
   const total = stocks.length;

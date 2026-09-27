@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, descNullsLast } from "@/lib/db";
 import { fetchIndices } from "@/lib/yahoo";
 import { evaluateAlerts } from "@/lib/alerts";
 
@@ -72,11 +72,11 @@ export async function GET(req: Request) {
     // only names with ≥ ₹1 Cr actually traded today (price × volume).
     async function movers(dir: "desc" | "asc") {
       if (moversMode === "all") {
-        return db.stock.findMany({ where: liquid, orderBy: { changePct: dir }, take: 10, select });
+        return db.stock.findMany({ where: liquid, orderBy: dir === "desc" ? descNullsLast("changePct") : { changePct: dir }, take: 10, select });
       }
       const candidates = await db.stock.findMany({
         where: { ...liquid, price: { gte: 10 }, volume: { gte: 20_000 } },
-        orderBy: { changePct: dir },
+        orderBy: dir === "desc" ? descNullsLast("changePct") : { changePct: dir },
         take: 80,
         select,
       });
@@ -88,7 +88,7 @@ export async function GET(req: Request) {
       movers("asc"),
       db.stock.findMany({
         where: base,
-        orderBy: [{ volume: "desc" }, { marketCap: "desc" }],
+        orderBy: [descNullsLast("volume"), descNullsLast("marketCap")],
         take: 10,
         select: { ...select },
       }),

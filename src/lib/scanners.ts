@@ -10,7 +10,7 @@
  * Each scan is a self-contained DB query (+ optional bar-based post-filter).
  */
 
-import { db } from "@/lib/db";
+import { db, descNullsLast } from "@/lib/db";
 import { loadBarsForSymbols, weeklyBars, monthlyBars, type Bar } from "@/lib/bars";
 import { emaSeries, rsi } from "@/lib/indicators";
 
@@ -239,15 +239,16 @@ function rangePct(bars: Bar[], from: number, to: number): number | null {
 }
 
 /**
- * Shared runner for bar-based scans: fetch liquid candidates from the DB, load
+ * Shared runner for bar-based scans: fetch candidates from the DB (the FULL
+ * priced universe — an earlier revision cut the pool to the top ~900 by
+ * market cap, silently dropping every small-cap hit from the results), load
  * their recent daily bars in CHUNKS (a single query for 3,000+ symbols would
- * materialise ~700k rows at once and OOM the dev server), apply the per-stock
- * predicate, collect metric rows. `hit` returns the metrics object for a match,
- * or null to skip.
+ * materialise ~1M rows at once and OOM the dev server), apply the per-stock
+ * predicate, collect metric rows. `hit` returns the metrics object for a
+ * match, or null to skip.
  */
 async function scanWithBars<T extends Record<string, unknown>>(opts: {
   where?: Record<string, unknown>;
-  take?: number;
   barsLimit: number;
   minBars: number;
   select?: Record<string, boolean>;
@@ -258,9 +259,13 @@ async function scanWithBars<T extends Record<string, unknown>>(opts: {
   cap?: number;
 }): Promise<ScanResult> {
   const candidates = (await db.stock.findMany({
-    where: (opts.where ?? { price: { not: null } }) as never,
-    orderBy: { marketCap: "desc" },
-    take: opts.take ?? 700,
+    // equities only: names without a market cap are funds/ETFs (liquid
+    // money-market ETFs sit flat at ₹1,000 and "break out" on noise every
+    // other session, flooding breakout/coil scans) — or rows whose mcap
+    // column is simply absent, which would render blank anyway
+    where: (opts.where ?? { price: { not: null }, marketCap: { not: null } }) as never,
+    // deterministic output order; no take — the universe IS the candidate pool
+    orderBy: descNullsLast("marketCap"),
     select: { ...BASE_SELECT, ...(opts.select ?? {}) },
   })) as (Cand & T)[];
 
@@ -316,7 +321,7 @@ const chartPatternScans: ScanDef[] = [
     description: "Closed above the highest high of the previous 60 daily sessions — a fresh daily breakout of horizontal resistance.",
     run: () =>
       scanWithBars({
-        barsLimit: 75, minBars: 65, take: 900,
+        barsLimit: 75, minBars: 65,
         select: { fromHighPct: true },
         hit: (s, bars) => {
           const n = bars.length;
@@ -342,7 +347,7 @@ const chartPatternScans: ScanDef[] = [
     description: "Weekly close above the highest high of the previous 30 weeks — the multi-month base has cleared.",
     run: () =>
       scanWithBars({
-        barsLimit: 520, minBars: 220, take: 900,
+        barsLimit: 520, minBars: 220,
         select: { fromHighPct: true },
         hit: (s, bars) => {
           const weekly = weeklyBars(bars);
@@ -370,7 +375,7 @@ const chartPatternScans: ScanDef[] = [
     description: "Monthly close above the highest high of the previous 18 months — all-time-style structural breakouts.",
     run: () =>
       scanWithBars({
-        barsLimit: 520, minBars: 220, take: 900,
+        barsLimit: 520, minBars: 220,
         select: { fromHighPct: true },
         hit: (s, bars) => {
           const monthly = monthlyBars(bars);
@@ -398,7 +403,7 @@ const chartPatternScans: ScanDef[] = [
     description: "Five-day range under 4.5% and ten-day range under 9%, closing in the top quarter — a sideways coil next to the highs.",
     run: () =>
       scanWithBars({
-        barsLimit: 60, minBars: 40, take: 900,
+        barsLimit: 60, minBars: 40,
         select: { fromHighPct: true },
         hit: (s, bars) => {
           const n = bars.length;
@@ -425,7 +430,7 @@ const chartPatternScans: ScanDef[] = [
     description: "Five-week range under 10% with the weekly close in the top quarter — the quiet base before expansion.",
     run: () =>
       scanWithBars({
-        barsLimit: 520, minBars: 220, take: 900,
+        barsLimit: 520, minBars: 220,
         select: { fromHighPct: true },
         hit: (s, bars) => {
           const weekly = weeklyBars(bars);
@@ -452,7 +457,7 @@ const chartPatternScans: ScanDef[] = [
     description: "Today's range sits fully inside yesterday's bar and the prior bar traded 1.5%+ — compression before expansion.",
     run: () =>
       scanWithBars({
-        barsLimit: 12, minBars: 3, take: 900,
+        barsLimit: 12, minBars: 3,
         select: { fromHighPct: true },
         hit: (s, bars) => {
           const pair = lastBars(bars);
@@ -474,7 +479,7 @@ const chartPatternScans: ScanDef[] = [
     description: "This week's range is fully inside last week's bar — a pause inside a weekly candle, often pre-breakout.",
     run: () =>
       scanWithBars({
-        barsLimit: 520, minBars: 220, take: 900,
+        barsLimit: 520, minBars: 220,
         select: { fromHighPct: true },
         hit: (s, bars) => {
           const weekly = weeklyBars(bars);
@@ -496,7 +501,7 @@ const chartPatternScans: ScanDef[] = [
     description: "A sharp 12%+ pole followed by a shallow 2-15% drift sideways, price holding above the pole base — continuation pocket.",
     run: () =>
       scanWithBars({
-        barsLimit: 70, minBars: 50, take: 900,
+        barsLimit: 70, minBars: 50,
         select: { fromHighPct: true },
         hit: (s, bars) => {
           const n = bars.length;
@@ -536,7 +541,7 @@ const chartPatternScans: ScanDef[] = [
     description: "Volatility Contraction Pattern — three successive range contractions into a tight 6% final base with drying volume, near the 52-week high.",
     run: () =>
       scanWithBars({
-        barsLimit: 70, minBars: 50, take: 900,
+        barsLimit: 70, minBars: 50,
         select: { fromHighPct: true },
         hit: (s, bars) => {
           const n = bars.length;
@@ -584,8 +589,8 @@ const gapEarningsScans: ScanDef[] = [
         { key: "changePct", label: "Change", type: "pct" },
       ];
       const stocks = await db.stock.findMany({
-        where: { open: { not: null }, prevClose: { not: null }, price: { not: null } },
-        orderBy: { marketCap: "desc" }, take: 900, select: { ...BASE_SELECT, open: true, prevClose: true },
+        where: { open: { not: null }, prevClose: { not: null }, price: { not: null }, marketCap: { not: null } },
+        orderBy: descNullsLast("marketCap"), select: { ...BASE_SELECT, open: true, prevClose: true },
       });
       const filtered = stocks
         .filter((s) => s.prevClose && (s.open as number) > (s.prevClose as number) * 1.02)
@@ -606,7 +611,7 @@ const gapEarningsScans: ScanDef[] = [
     description: "A recent up-gap is being traded back into — price is re-entering the unfilled zone left behind by the gap day.",
     run: () =>
       scanWithBars({
-        barsLimit: 15, minBars: 8, take: 900,
+        barsLimit: 15, minBars: 8,
         hit: (_s, bars) => {
           const n = bars.length;
           const today = bars[n - 1];
@@ -642,10 +647,10 @@ const gapEarningsScans: ScanDef[] = [
       ];
       const stocks = await db.stock.findMany({
         where: {
-          open: { not: null }, prevClose: { not: null }, price: { not: null },
+          open: { not: null }, prevClose: { not: null }, price: { not: null }, marketCap: { not: null },
           earningsDate: { gte: new Date(Date.now() - 4 * 86400_000), lte: new Date() },
         },
-        orderBy: { marketCap: "desc" }, take: 400, select: { ...BASE_SELECT, open: true, prevClose: true, earningsDate: true },
+        orderBy: descNullsLast("marketCap"), select: { ...BASE_SELECT, open: true, prevClose: true, earningsDate: true },
       });
       const filtered = stocks
         .filter((s) => s.prevClose && (s.open as number) > (s.prevClose as number) * 1.02)
@@ -668,9 +673,10 @@ const gapEarningsScans: ScanDef[] = [
       scanWithBars({
         where: {
           price: { not: null },
+          marketCap: { not: null },
           earningsDate: { gte: new Date(Date.now() - 10 * 86400_000), lte: new Date() },
         },
-        take: 400, barsLimit: 30, minBars: 5,
+        barsLimit: 30, minBars: 5,
         select: { earningsDate: true },
         hit: (s, bars) => {
           const ed = (s.earningsDate as Date)?.toISOString().slice(0, 10);
@@ -700,7 +706,7 @@ const gapEarningsScans: ScanDef[] = [
 function shakeoutScan(emaPeriod: number): () => Promise<ScanResult> {
   return () =>
     scanWithBars({
-      barsLimit: 220, minBars: emaPeriod + 10, take: 900,
+      barsLimit: 220, minBars: emaPeriod + 10,
       hit: (_s, bars) => {
         const n = bars.length;
         const closes = bars.map((b) => b.close);
@@ -749,8 +755,8 @@ const volumeScans: ScanDef[] = [
         { key: "changePct", label: "Change", type: "pct" },
       ];
       const stocks = await db.stock.findMany({
-        where: { changePct: { gt: 0 }, volume: { not: null }, avgVol3M: { not: null, gt: 0 }, price: { not: null } },
-        orderBy: { volume: "desc" }, take: 900,
+        where: { changePct: { gt: 0 }, volume: { not: null }, avgVol3M: { not: null, gt: 0 }, price: { not: null }, marketCap: { not: null } },
+        orderBy: descNullsLast("volume"),
         select: { ...BASE_SELECT, volume: true, avgVol3M: true },
       });
       const rows = buildRows(stocks, columns, (s) => ({
@@ -767,7 +773,7 @@ const volumeScans: ScanDef[] = [
     description: "Today's volume exploded to 2.5x or more of its 20-session average — a sudden burst of attention worth inspecting.",
     run: () =>
       scanWithBars({
-        barsLimit: 25, minBars: 21, take: 900,
+        barsLimit: 25, minBars: 21,
         hit: (_s, bars) => {
           const n = bars.length;
           const vols = bars.map((b) => b.volume || 0);
@@ -789,7 +795,7 @@ const volumeScans: ScanDef[] = [
     description: "Today traded the heaviest volume of the last 60 sessions at 1.8x the average — attention is arriving.",
     run: () =>
       scanWithBars({
-        barsLimit: 70, minBars: 61, take: 900,
+        barsLimit: 70, minBars: 61,
         hit: (_s, bars) => {
           const n = bars.length;
           const vols = bars.map((b) => b.volume || 0);
@@ -813,7 +819,7 @@ const volumeScans: ScanDef[] = [
     description: "Three or more of the last six sessions traded at 2x the 60-day average with a net up move — sustained accumulation.",
     run: () =>
       scanWithBars({
-        barsLimit: 70, minBars: 61, take: 900,
+        barsLimit: 70, minBars: 61,
         hit: (_s, bars) => {
           const n = bars.length;
           const vols = bars.map((b) => b.volume || 0);
@@ -842,8 +848,8 @@ const volumeScans: ScanDef[] = [
         { key: "volRatio", label: "Vol vs 3M avg", type: "x" },
       ];
       const stocks = await db.stock.findMany({
-        where: { changePct: { gt: 0 }, volume: { not: null }, avgVol3M: { not: null, gt: 0 }, price: { not: null } },
-        orderBy: { volume: "desc" }, take: 900,
+        where: { changePct: { gt: 0 }, volume: { not: null }, avgVol3M: { not: null, gt: 0 }, price: { not: null }, marketCap: { not: null } },
+        orderBy: descNullsLast("volume"),
         select: { ...BASE_SELECT, volume: true, avgVol3M: true },
       });
       const rows = buildRows(stocks, columns, (s) => ({
@@ -870,8 +876,8 @@ const rsScans: ScanDef[] = [
         { key: "fromHighPct", label: "From 52W high", type: "pct" },
       ];
       const stocks = await db.stock.findMany({
-        where: { mom6M: { not: null }, fromHighPct: { not: null }, price: { not: null } },
-        orderBy: { marketCap: "desc" },
+        where: { mom6M: { not: null }, fromHighPct: { not: null }, price: { not: null }, marketCap: { not: null } },
+        orderBy: descNullsLast("marketCap"),
         select: { ...BASE_SELECT, mom6M: true, fromHighPct: true },
       });
       const returns = stocks.map((s) => s.mom6M as number).sort((a, b) => a - b);
@@ -901,8 +907,8 @@ const rsScans: ScanDef[] = [
         { key: "fromHighPct", label: "From 52W high", type: "pct" },
       ];
       const stocks = await db.stock.findMany({
-        where: { mom3M: { not: null }, fromHighPct: { not: null }, price: { not: null } },
-        orderBy: { marketCap: "desc" },
+        where: { mom3M: { not: null }, fromHighPct: { not: null }, price: { not: null }, marketCap: { not: null } },
+        orderBy: descNullsLast("marketCap"),
         select: { ...BASE_SELECT, mom3M: true, fromHighPct: true },
       });
       const returns = stocks.map((s) => s.mom3M as number).sort((a, b) => a - b);
@@ -934,8 +940,8 @@ const rsScans: ScanDef[] = [
       // within 0.5% of it, closest first — the old top-60-by-mcap query cut
       // valid names purely for their size.
       const stocks = await db.stock.findMany({
-        where: { fromHighPct: { lte: 0.5 }, price: { not: null } },
-        orderBy: [{ fromHighPct: "asc" }, { marketCap: "desc" }],
+        where: { fromHighPct: { lte: 0.5 }, price: { not: null }, marketCap: { not: null } },
+        orderBy: [{ fromHighPct: "asc" }, descNullsLast("marketCap")],
         select: { ...BASE_SELECT, fromHighPct: true, mom3M: true },
       });
       return { columns, rows: buildRows(stocks, columns, (s) => ({ fromHighPct: s.fromHighPct as number, mom3M: s.mom3M as number })).slice(0, 60), scanned: await countUniverse() };
@@ -951,7 +957,7 @@ const specialtyScans: ScanDef[] = [
     description: "Listed within roughly the last 90 sessions — the fresh-quote list, newest first.",
     run: () =>
       scanWithBars({
-        barsLimit: 100, minBars: 1, take: 900,
+        barsLimit: 100, minBars: 1,
         hit: (_s, bars) => {
           const listedDays = bars.length;
           if (listedDays > 90) return null;
@@ -969,7 +975,7 @@ const specialtyScans: ScanDef[] = [
     description: "Recent listings holding above their 20 & 50 EMA within 12% of the post-IPO high and coiling — constructive bases under a year old.",
     run: () =>
       scanWithBars({
-        barsLimit: 130, minBars: 25, take: 900,
+        barsLimit: 130, minBars: 25,
         hit: (_s, bars) => {
           const n = bars.length;
           if (n > 120) return null;
@@ -1005,16 +1011,16 @@ const specialtyScans: ScanDef[] = [
       ];
       const stocks = await db.stock.findMany({
         where: {
-          changePct: { gte: 8.5, lte: 100 }, volume: { not: null }, avgVol3M: { not: null, gt: 0 }, price: { not: null },
+          changePct: { gte: 8.5, lte: 100 }, volume: { not: null }, avgVol3M: { not: null, gt: 0 }, price: { not: null }, marketCap: { not: null },
         },
-        orderBy: { changePct: "desc" }, take: 300,
+        orderBy: descNullsLast("changePct"),
         select: { ...BASE_SELECT, volume: true, avgVol3M: true },
       });
       const downs = await db.stock.findMany({
         where: {
-          changePct: { lte: -8.5, gte: -100 }, volume: { not: null }, avgVol3M: { not: null, gt: 0 }, price: { not: null },
+          changePct: { lte: -8.5, gte: -100 }, volume: { not: null }, avgVol3M: { not: null, gt: 0 }, price: { not: null }, marketCap: { not: null },
         },
-        orderBy: { changePct: "asc" }, take: 150,
+        orderBy: { changePct: "asc" },
         select: { ...BASE_SELECT, volume: true, avgVol3M: true },
       });
       const all = [...stocks, ...downs];
@@ -1037,13 +1043,13 @@ const specialtyScans: ScanDef[] = [
         { key: "fromHighPct", label: "From 52W high", type: "pct" },
       ];
       const stocks = await db.stock.findMany({
-        where: { mom1M: { gte: 8 }, mom3M: { gte: 15 }, aboveSma50: true, fromHighPct: { lte: 12 }, price: { not: null } },
-        orderBy: { mom3M: "desc" }, take: 60,
+        where: { mom1M: { gte: 8 }, mom3M: { gte: 15 }, aboveSma50: true, fromHighPct: { lte: 12 }, price: { not: null }, marketCap: { not: null } },
+        orderBy: descNullsLast("mom3M"),
         select: { ...BASE_SELECT, mom1M: true, mom3M: true, fromHighPct: true },
       });
       return {
         columns,
-        rows: buildRows(stocks, columns, (s) => ({ mom1M: s.mom1M as number, mom3M: s.mom3M as number, fromHighPct: s.fromHighPct as number })),
+        rows: buildRows(stocks, columns, (s) => ({ mom1M: s.mom1M as number, mom3M: s.mom3M as number, fromHighPct: s.fromHighPct as number })).slice(0, 60),
         scanned: await countUniverse(),
       };
     },
@@ -1060,14 +1066,14 @@ const specialtyScans: ScanDef[] = [
       const stocks = await db.stock.findMany({
         where: {
           aboveSma50: false, macdHist: { lt: 0 }, rsi14: { gte: 35, lte: 60 },
-          fromHighPct: { gte: 10 }, changePct: { lt: 0 }, price: { not: null },
+          fromHighPct: { gte: 10 }, changePct: { lt: 0 }, price: { not: null }, marketCap: { not: null },
         },
-        orderBy: { rsi14: "asc" }, take: 60,
+        orderBy: { rsi14: "asc" },
         select: { ...BASE_SELECT, rsi14: true, fromHighPct: true },
       });
       return {
         columns,
-        rows: buildRows(stocks, columns, (s) => ({ rsi14: s.rsi14 as number, fromHighPct: s.fromHighPct as number, changePct: s.changePct as number })),
+        rows: buildRows(stocks, columns, (s) => ({ rsi14: s.rsi14 as number, fromHighPct: s.fromHighPct as number, changePct: s.changePct as number })).slice(0, 60),
         scanned: await countUniverse(),
       };
     },
@@ -1086,34 +1092,40 @@ async function multiTimeframeRsi(dailyMin: number, dailyMax: number): Promise<Sc
   ];
   // cheap prefilter on the stored daily RSI before loading bars
   const candidates = await db.stock.findMany({
-    where: { rsi14: { gte: 30, lte: 70 }, price: { not: null } },
-    orderBy: { marketCap: "desc" }, take: 600,
+    where: { rsi14: { gte: 30, lte: 70 }, price: { not: null }, marketCap: { not: null } },
+    orderBy: descNullsLast("marketCap"),
     select: { ...BASE_SELECT, rsi14: true, fromHighPct: true },
   });
-  const barsMap = await loadBarsForSymbols(candidates.map((s) => s.symbol), 520);
   const rows: ScanRow[] = [];
-  for (const s of candidates) {
-    const bars = barsMap.get(s.symbol);
-    if (!bars || bars.length < 60) continue;
-    const monthly = monthlyBars(bars).map((b: Bar) => b.close);
-    const weekly = weeklyBars(bars).map((b: Bar) => b.close);
-    const mRsi = monthly.length >= 15 ? rsi(monthly) : null;
-    const wRsi = weekly.length >= 15 ? rsi(weekly) : null;
-    const dRsi = bars.length >= 20 ? rsi(bars.map((b) => b.close)) : null;
-    if (mRsi == null || wRsi == null || dRsi == null) continue;
-    if (!(mRsi > 60 && wRsi > 60 && dRsi > dailyMin && dRsi < dailyMax)) continue;
-    rows.push({
-      symbol: s.symbol, name: s.name, price: s.price, changePct: s.changePct,
-      marketCap: s.marketCap, sector: s.sector,
-      mom1M: (s.mom1M as number | null) ?? null,
-      mom3M: (s.mom3M as number | null) ?? null,
-      mom6M: (s.mom6M as number | null) ?? null,
-      metrics: {
-        mRSI: Number(mRsi.toFixed(1)), wRSI: Number(wRsi.toFixed(1)),
-        dRSI: Number(dRsi.toFixed(1)), fromHighPct: s.fromHighPct,
-      },
-    });
-    if (rows.length >= 60) break;
+  // bars load in bounded chunks — a full-universe 520-bar pull in one query
+  // materialises ~1.5M rows (OOM precedent on the 4GB box)
+  const CHUNK = 400;
+  outer: for (let i = 0; i < candidates.length; i += CHUNK) {
+    const batch = candidates.slice(i, i + CHUNK);
+    const barsMap = await loadBarsForSymbols(batch.map((s) => s.symbol), 520);
+    for (const s of batch) {
+      const bars = barsMap.get(s.symbol);
+      if (!bars || bars.length < 60) continue;
+      const monthly = monthlyBars(bars).map((b: Bar) => b.close);
+      const weekly = weeklyBars(bars).map((b: Bar) => b.close);
+      const mRsi = monthly.length >= 15 ? rsi(monthly) : null;
+      const wRsi = weekly.length >= 15 ? rsi(weekly) : null;
+      const dRsi = bars.length >= 20 ? rsi(bars.map((b) => b.close)) : null;
+      if (mRsi == null || wRsi == null || dRsi == null) continue;
+      if (!(mRsi > 60 && wRsi > 60 && dRsi > dailyMin && dRsi < dailyMax)) continue;
+      rows.push({
+        symbol: s.symbol, name: s.name, price: s.price, changePct: s.changePct,
+        marketCap: s.marketCap, sector: s.sector,
+        mom1M: (s.mom1M as number | null) ?? null,
+        mom3M: (s.mom3M as number | null) ?? null,
+        mom6M: (s.mom6M as number | null) ?? null,
+        metrics: {
+          mRSI: Number(mRsi.toFixed(1)), wRSI: Number(wRsi.toFixed(1)),
+          dRSI: Number(dRsi.toFixed(1)), fromHighPct: s.fromHighPct,
+        },
+      });
+      if (rows.length >= 60) break outer;
+    }
   }
   rows.sort((a, b) => (a.metrics.dRSI as number) - (b.metrics.dRSI as number));
   return { columns, rows, scanned: candidates.length };
@@ -1149,7 +1161,7 @@ const traderChoiceScans: ScanDef[] = [
     description: "Momentum & breakout setup — RS rating 80+, within 12% of the 52-week high, a tightening 10-day coil, stacked 20>50 EMAs and above-average volume.",
     run: () =>
       scanWithBars({
-        barsLimit: 70, minBars: 60, take: 900,
+        barsLimit: 70, minBars: 60,
         select: { fromHighPct: true, mom6M: true },
         hit: (s, bars) => {
           const n = bars.length;
@@ -1181,7 +1193,7 @@ const traderChoiceScans: ScanDef[] = [
     description: "Clean technicals & price action — a fresh 20-session high booked with a narrow-range or inside day, trending above the 50 EMA and not more than 10% off the high.",
     run: () =>
       scanWithBars({
-        barsLimit: 70, minBars: 60, take: 900,
+        barsLimit: 70, minBars: 60,
         select: { fromHighPct: true },
         hit: (s, bars) => {
           const n = bars.length;
@@ -1216,7 +1228,7 @@ const traderChoiceScans: ScanDef[] = [
     description: "Breakout filters — closed above the 40-day high on 1.5x volume with an RS rating of 70+ and the 20 EMA trending up.",
     run: () =>
       scanWithBars({
-        barsLimit: 70, minBars: 60, take: 900,
+        barsLimit: 70, minBars: 60,
         select: { mom6M: true },
         hit: (s, bars) => {
           const n = bars.length;
@@ -1249,7 +1261,7 @@ const traderChoiceScans: ScanDef[] = [
     description: "Volume-backed trend — 2x volume on an up day, closing in the top third of the range, above the 200 EMA with a positive 5-day run.",
     run: () =>
       scanWithBars({
-        barsLimit: 220, minBars: 210, take: 900,
+        barsLimit: 220, minBars: 210,
         hit: (_s, bars) => {
           const n = bars.length;
           const closes = bars.map((b) => b.close);
@@ -1287,8 +1299,8 @@ const traderChoiceScans: ScanDef[] = [
         // No market-cap filter: Yahoo lacks the field for a few listed names
         // (e.g. ARTEMISMED.NS) and the turnover floor already removes illiquid
         // micro-caps, so a size filter would only silently drop legitimate hits.
-        where: { price: { gte: 30 } },
-        barsLimit: 220, minBars: 210, take: 3500,
+        where: { price: { gte: 30 }, marketCap: { not: null } },
+        barsLimit: 220, minBars: 210,
         hit: (_s, bars) => {
           const n = bars.length;
           const closes = bars.map((b) => b.close);
@@ -1335,7 +1347,7 @@ const traderChoiceScans: ScanDef[] = [
     description: "Six-signal confluence — near 52W high, above 50 & 200 EMA, strong 6M momentum, tight 10-day coil, 1.5x volume and RSI 50-75 counted per stock; only names firing four or more signals make the list.",
     run: () =>
       scanWithBars({
-        barsLimit: 220, minBars: 210, take: 900,
+        barsLimit: 220, minBars: 210,
         select: { fromHighPct: true, mom6M: true, rsi14: true },
         hit: (s, bars) => {
           const n = bars.length;
@@ -1379,11 +1391,16 @@ const traderChoiceScans: ScanDef[] = [
         // get their bars loaded.
         where: {
           price: { gte: 30 },
+          marketCap: { not: null },
           epsQuarterlyGrowth: { gt: 0.30 },
           revenueQoQGrowth: { gt: 0 },
           symbol: { endsWith: ".NS" },
         },
-        barsLimit: 220, minBars: 210, take: 1200,
+        // The 52W-high lookback below reads n-250 — the window must actually
+        // contain 250 sessions (the old drifting loader used to overshoot its
+        // limit and accidentally supply them; minBars 250 skips candidates
+        // whose shorter history could never pass that check).
+        barsLimit: 260, minBars: 250,
         select: { epsQuarterlyGrowth: true, revenueQoQGrowth: true },
         hit: (_s, bars) => {
           const n = bars.length;

@@ -39,6 +39,22 @@ export function toPgSql(sql: string): string {
   return sql.replace(/\?/g, () => `$${++i}`);
 }
 
+/**
+ * PostgreSQL-compatible "biggest first" ordering for nullable numeric columns.
+ *
+ * SQLite treats NULL as the smallest value, so `ORDER BY marketCap DESC`
+ * parked un-ranked rows at the END of the list. PostgreSQL orders NULLS
+ * FIRST on DESC by default — after the migration that flipped every
+ * top-N window (scanner candidate pools, screener first page, trickle
+ * priority) from the largest liquid names to the 1,000+ rows Yahoo has no
+ * market cap for (SME/ETF segment). This helper restores the intended
+ * "unranked sorts last" semantics on PostgreSQL while remaining valid
+ * Prisma syntax for any provider.
+ */
+export function descNullsLast<F extends string>(field: F): { [K in F]: { sort: "desc"; nulls: "last" } } {
+  return { [field]: { sort: "desc", nulls: "last" } } as { [K in F]: { sort: "desc"; nulls: "last" } };
+}
+
 export const db =
   globalForPrisma.prisma ??
   new PrismaClient({

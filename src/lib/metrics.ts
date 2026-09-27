@@ -15,7 +15,7 @@
  * recompute and the closes phase already produced them.
  */
 
-import { db } from "@/lib/db";
+import { db, descNullsLast } from "@/lib/db";
 import { computeIndicators, computeExtendedIndicators, emaSeries, sma } from "@/lib/indicators";
 import { weightedRs } from "@/lib/ratings";
 import { expectedLatestBarDate } from "@/lib/bar-sync";
@@ -79,7 +79,7 @@ export async function computeStockMetrics(opts?: { date?: string; force?: boolea
         wMacdHist: true,
         volSpike: true,
       },
-      orderBy: { marketCap: "desc" },
+      orderBy: descNullsLast("marketCap"),
     });
 
     // Rebuild the whole session atomically: wipe any partial run, then insert.

@@ -4,7 +4,7 @@
  * call repeatedly (single-flight via globalThis guards).
  */
 
-import { db, toPgSql } from "@/lib/db";
+import { db, toPgSql, descNullsLast } from "@/lib/db";
 import { fetchAssetProfile, fetchEarningsDate, fetchFinancials } from "@/lib/yahoo";
 import { STALE_DATA_MS } from "@/lib/sync";
 import { resolveTaxonomy } from "@/lib/taxonomy";
@@ -43,7 +43,7 @@ export function startSectorTrickle() {
         const pending = await db.stock.findMany({
           where: { sectorSynced: null },
           select: { symbol: true },
-          orderBy: { marketCap: "desc" },
+          orderBy: descNullsLast("marketCap"),
           take: CHUNK,
         });
         if (pending.length === 0) break;
@@ -105,7 +105,7 @@ export function startBarsTrickle() {
             LEFT JOIN (SELECT symbol, MAX(date) AS maxDate FROM "DailyBar" GROUP BY symbol) b
               ON b.symbol = s.symbol
            WHERE s.price IS NOT NULL AND (b.maxDate IS NULL OR b.maxDate < ?)
-           ORDER BY s."marketCap" DESC`),
+           ORDER BY s."marketCap" DESC NULLS LAST`),
           expected
         );
         batch = rows;
@@ -115,7 +115,7 @@ export function startBarsTrickle() {
         batch = await db.stock.findMany({
           where: { OR: [{ barsSynced: null }, { barsSynced: { lt: cutoff } }] },
           select: { symbol: true },
-          orderBy: { marketCap: "desc" },
+          orderBy: descNullsLast("marketCap"),
         });
       }
 
@@ -175,24 +175,30 @@ export function startEarningsTrickle() {
   g.__tpEarningsTrickle = true;
   void (async () => {
     try {
-      const pendingTotal = await db.stock.count({ where: { earningsSynced: null } });
+      // estimates shift and results get announced — re-sync anything not
+      // touched for 14 days, not just never-synced names
+      const staleCutoff = new Date(Date.now() - 14 * 86400_000);
+      const pendingWhere = { OR: [{ earningsSynced: null }, { earningsSynced: { lt: staleCutoff } }] };
+      const pendingTotal = await db.stock.count({ where: pendingWhere });
       await bumpCounters({ earningsTotal: pendingTotal, earningsDone: 0 });
       const CHUNK = 6;
       let done = 0;
       for (;;) {
         const pending = await db.stock.findMany({
-          where: { earningsSynced: null },
+          where: pendingWhere,
           select: { symbol: true },
-          orderBy: { marketCap: "desc" },
+          orderBy: descNullsLast("marketCap"),
           take: CHUNK,
         });
         if (pending.length === 0) break;
         for (const s of pending) {
-          const date = await fetchEarningsDate(s.symbol).catch(() => null);
+          // undefined = transport failure (leave any stored date untouched);
+          // null = Yahoo has no date for the name (clear the stale estimate)
+          const date = await fetchEarningsDate(s.symbol).catch(() => undefined);
           await db.stock.update({
             where: { symbol: s.symbol },
             data: {
-              earningsDate: date && !Number.isNaN(date.getTime()) ? date : null,
+              ...(date === undefined ? {} : { earningsDate: date }),
               earningsSynced: new Date(),
             },
           }).catch(() => {});
@@ -233,7 +239,7 @@ export function startFinancialsTrickle() {
         const pending = await db.stock.findMany({
           where: { OR: [{ financialsSynced: null }, { financialsSynced: { lt: cutoff } }] },
           select: { symbol: true },
-          orderBy: { marketCap: "desc" },
+          orderBy: descNullsLast("marketCap"),
           take: CHUNK,
         });
         if (pending.length === 0) break;

@@ -32,28 +32,31 @@ export async function loadSymbolBars(symbol: string, limit = 500): Promise<Symbo
   return { symbol, bars };
 }
 
-/** Load daily bars for many symbols in one query (for bar-based scanners). */
+/** Load daily bars for many symbols in one query (for bar-based scanners).
+ *
+ *  - Strict window: each symbol keeps EXACTLY its most recent `limit` bars.
+ *    (The old window arithmetic drifted — it grew ~1 bar per 2 sessions past
+ *    the limit, silently changing how many bars every scan evaluated.)
+ *  - Date cutoff: `limit` sessions ≈ `limit × 1.45` calendar days (NSE trades
+ *    ~252 sessions/year); fetch 30% beyond that so holiday clusters never
+ *    shorten the window for actively-trading names. Cuts short-lookback scans
+ *    from a full-history pull (~1.2M rows) to a fraction of it.
+ */
 export async function loadBarsForSymbols(symbols: string[], limit = 260): Promise<Map<string, Bar[]>> {
   if (symbols.length === 0) return new Map();
+  const cutoff = new Date(Date.now() - Math.ceil(limit * 1.45 * 1.3) * 86400_000).toISOString().slice(0, 10);
   const rows = await db.dailyBar.findMany({
-    where: { symbol: { in: symbols } },
+    where: { symbol: { in: symbols }, date: { gte: cutoff } },
     orderBy: [{ symbol: "asc" }, { date: "asc" }],
   });
   const bySymbol = new Map<string, Bar[]>();
-  const startIdx = new Map<string, number>();
   for (const r of rows) {
-    let start = startIdx.get(r.symbol) ?? 0;
     let list = bySymbol.get(r.symbol);
     if (!list) {
       list = [];
       bySymbol.set(r.symbol, list);
     }
-    if (list.length - start >= limit) {
-      // keep only the most recent `limit` bars — shift the window
-      list.shift();
-      start++;
-      startIdx.set(r.symbol, start);
-    }
+    if (list.length >= limit) list.shift();
     list.push({ date: r.date, open: r.open, high: r.high, low: r.low, close: r.close, volume: r.volume });
   }
   return bySymbol;

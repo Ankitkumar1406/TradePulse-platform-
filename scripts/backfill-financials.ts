@@ -15,7 +15,7 @@ async function main() {
   const pending = await db.stock.findMany({
     where: { financialsSynced: null },
     select: { symbol: true },
-    orderBy: { marketCap: "desc" },
+    orderBy: { marketCap: { sort: "desc", nulls: "last" } },
   });
   console.log(`[backfill-financials] ${pending.length} stocks to fetch`);
   const CONCURRENCY = 5;

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db } from "@/lib/db";
+import { db, descNullsLast } from "@/lib/db";
 
 export const dynamic = "force-dynamic";
 
@@ -37,13 +37,13 @@ export async function GET(req: Request) {
   const [symRows, nameRows] = await Promise.all([
     db.stock.findMany({
       where: { symbol: { contains: symQuery } },
-      orderBy: [{ marketCap: "desc" }, { symbol: "asc" }],
+      orderBy: [descNullsLast("marketCap"), { symbol: "asc" }],
       take: 10,
       select: SELECT,
     }),
     db.stock.findMany({
       where: { OR: nameVariants(q).map((v) => ({ name: { contains: v } })) },
-      orderBy: [{ marketCap: "desc" }, { symbol: "asc" }],
+      orderBy: [descNullsLast("marketCap"), { symbol: "asc" }],
       take: 10,
       select: SELECT,
     }),

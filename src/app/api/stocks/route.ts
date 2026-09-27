@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { db, toPgSql } from "@/lib/db";
+import { db, toPgSql, descNullsLast } from "@/lib/db";
 import {
   CondSemantics,
   ProCompileError,
@@ -190,7 +190,14 @@ export async function GET(req: Request) {
         db.stock.count({ where }),
         db.stock.findMany({
           where,
-          orderBy: [{ [sort]: dir }, { marketCap: "desc" }],
+          // nulls-last on the DESC leg: PostgreSQL would otherwise surface the
+          // ~1,000 no-market-cap rows (SME/ETF) on page 1 of every default view
+          orderBy: [
+            dir === "desc"
+              ? ({ [sort]: { sort: "desc", nulls: "last" } } as Record<string, never>)
+              : ({ [sort]: dir } as Record<string, never>),
+            descNullsLast("marketCap"),
+          ],
           skip: (page - 1) * perPage,
           take: perPage,
           select: STOCK_SELECT,
