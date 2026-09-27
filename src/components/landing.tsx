@@ -109,7 +109,7 @@ function Hero({ onStart }: { onStart: () => void }) {
         <div className="mx-auto max-w-3xl text-center">
           <div className="mx-auto mb-5 inline-flex items-center gap-2 rounded-full border border-brand/30 bg-brand/10 px-3.5 py-1.5 text-[11px] font-semibold uppercase tracking-widest text-brand-text">
             <Radar className="h-3.5 w-3.5" />
-            End-of-day research platform · All NSE 3,545 stocks
+            End-of-day research platform · All NSE 3,500+ stocks
           </div>
           <h1 className="text-4xl font-bold leading-tight tracking-tight text-zinc-50 sm:text-5xl lg:text-6xl">
             Research after the close.
@@ -142,8 +142,8 @@ function Hero({ onStart }: { onStart: () => void }) {
           </div>
           <div className="mt-6 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[11px] text-zinc-500">
             <span className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-brand-text" /> No credit card required · pay only on day 15, if you continue</span>
-            <span className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-brand-text" /> {TOTAL_SCANS} scanners · {TOTAL_CATEGORIES} categories</span>
-            <span className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-brand-text" /> Journal & market calendar included</span>
+            <span className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-brand-text" /> {TOTAL_SCANS} scanners · {TOTAL_CATEGORIES} categories · 7 Trader Choice templates</span>
+            <span className="flex items-center gap-1.5"><CheckCircle2 className="h-3.5 w-3.5 text-brand-text" /> RS · EPS · A/D ratings on every result</span>
           </div>
         </div>
 
@@ -174,14 +174,14 @@ function HeroChip({ icon, title, sub }: { icon: React.ReactNode; title: string; 
 // ---------------------------------------------------------------- features
 
 const FEATURES = [
-  { icon: ScanSearch, title: `${TOTAL_SCANS} one-click scanners`, text: `A pro-grade EOD suite across ${TOTAL_CATEGORIES} categories — chart patterns, shakeouts, gaps & earnings, volume, relative strength, the multi-timeframe RSI extra and the six Trader Choice templates. Sort any result by RS, change %, market cap or 1M/3M/6M performance, and star the best charts straight into your watchlist.` },
-  { icon: SlidersHorizontal, title: "Advanced screener with AND/OR builder", text: "Stack up to 15 conditions with AND/OR groups — daily or weekly RSI & MACD, SMA or EMA at 20/50/100/200, Bollinger Bands, momentum, volume and valuation. Run up to 8 scans together for confluence, save your screens, export to CSV." },
-  { icon: BarChart3, title: "Market breadth & sector rotation", text: "Advances, declines, 52-week highs/lows and participation above every key average — know the market's real mood in one glance before you plan the next session." },
+  { icon: ScanSearch, title: `${TOTAL_SCANS} one-click scanners`, text: `A pro-grade EOD suite across ${TOTAL_CATEGORIES} categories — chart patterns, shakeouts, gaps & earnings, volume, relative strength, the multi-timeframe RSI extra and all seven Trader Choice templates. Every result carries MarketSmith-style RS rating, EPS score & A/D rating — sort by RS, change %, market cap or 1M/3M/6M performance and star the best charts straight into your watchlist.` },
+  { icon: SlidersHorizontal, title: "Chartink-style condition builder", text: "Stack up to 50 condition rows with AND/OR groups — daily or weekly series, RSI & MACD, SMA or EMA at any length, Bollinger Bands, bars-ago offsets, crosses and percent windows. Run up to 8 scans together for confluence, save your screens, export to CSV." },
+  { icon: BarChart3, title: "Market breadth & sector rotation", text: "A-D line, new highs vs new lows, participation above every key average, sector breadth grid, the RS × momentum rotation quadrant and sector strength — know the market's real mood in one glance before you plan the next session." },
   { icon: TrendingUp, title: "Sector momentum, three timeframes", text: "Daily, weekly and monthly RSI for every index and sector — spot high-strength rotations early and avoid sectors that only look strong on the daily chart." },
   { icon: Target, title: "Watchlists & smart price alerts", text: "Star stocks from any scan, screener result or chart tile into a dedicated watchlist with entry, stop and target levels — then let smart price alerts do the monitoring for you." },
   { icon: BookOpen, title: "Professional trading journal", text: "Log every trade with auto-computed P&L, R-multiple and win rate — plus market notes and key learnings that compound into an edge." },
   { icon: CalendarDays, title: "Market calendar", text: "NSE holidays, F&O expiries, RBI MPC, FOMC, Budget and earnings windows — with what-it-means and how-to-prepare notes for traders." },
-  { icon: LineChart, title: "Clean charts & stock detail", text: "Two-year candlesticks with SMA overlays, in-pane volume, RSI, MACD, Bollinger Bands and full fundamentals for every stock — all of the 3,545 NSE-listed names." },
+  { icon: LineChart, title: "Clean charts & stock detail", text: "Two-year candlesticks with SMA overlays, in-pane volume, RSI, MACD, Bollinger Bands and full fundamentals for every stock — all of the 3,500+ NSE-listed names." },
 ];
 
 function Features() {
@@ -215,7 +215,7 @@ function Features() {
 // ---------------------------------------------------------------- how it works
 
 const STEPS = [
-  { n: "1", title: "Sync the whole market", text: "4:00 pm IST, TradePulse auto-refreshes all 3,545 NSE stocks — prices, indicators, bars. Zero effort on your side." },
+  { n: "1", title: "Sync the whole market", text: "4:00 pm IST, TradePulse auto-refreshes all 3,500+ NSE stocks — prices, indicators, bars. Zero effort on your side." },
   { n: "2", title: "Run your scans", text: `${TOTAL_SCANS} one-click scanners on finalized data. Horizontal resistance, tight setups, shakeouts, volume footprints, the Trader Choice templates — pick your favourites and run them in seconds.` },
   { n: "3", title: "Build the watchlist", text: "Sort the results by RS or momentum, star the best setups straight from the table, then decide entry, stop and target calmly while the market is closed." },
   { n: "4", title: "Execute the plan", text: "Tomorrow at 9:15, you're not reacting — you're executing a prepared plan. Then journal the result and compound the learning." },
@@ -261,22 +261,29 @@ const SCREENS: {
     slug: "scanners",
     eyebrow: "Scanners",
     title: "39 one-click scanners with RS, EPS score & A/D rating",
-    text: "Pick a scan, hit run, and every NSE stock that matches appears as a clean candlestick tile — two charts per row, never a wall of noise. Each result carries its RS rating, EPS score, EPS change % and A/D rating (MarketSmith-style), plus the consolidation base overlay; re-sort by any of them, and star any stock straight into your watchlist.",
-    points: ["RS · EPS score · A/D rating on every scan output", "Base overlay with formation duration on each tile", "Sort by RS, EPS score, change %, mcap or 1M/3M/6M"],
+    text: "Pick a scan — from horizontal resistance breakouts to the seven multi-condition Trader Choice templates — hit run, and every NSE stock that matches appears as a clean candlestick tile, two charts per row, never a wall of noise. Each result carries its RS rating, EPS score, EPS change % and A/D rating (MarketSmith-style), plus the consolidation base overlay; re-sort by any of them, and star any stock straight into your watchlist.",
+    points: ["RS · EPS score · EPS change % · A/D rating on every output", "All 7 Trader Choice templates — momentum, price action, breakout, volume, low-base, confluence & fundamentals", "Base overlay with formation duration on each tile", "Sort by RS, EPS score, change %, mcap or 1M/3M/6M"],
   },
   {
     slug: "screener",
     eyebrow: "Screener",
-    title: "A condition builder that thinks in AND / OR",
-    text: "Stack up to 15 conditions across price, valuation, momentum, volume and technicals — daily or weekly RSI and MACD, SMA or EMA at any length, Bollinger Bands. Chain them with AND/OR branches, load a ready preset, save the screen for later and export the table to CSV. Or fire up to 8 scans at once and rank stocks by how many they confluence on.",
-    points: ["15 conditions joined by AND/OR groups", "Daily & weekly indicators · SMA/EMA choice · Bollinger Bands", "Multi-scan confluence, saved screens & CSV export"],
+    title: "A Chartink-style builder that thinks in AND / OR",
+    text: "Stack up to 50 condition rows across price, valuation, momentum, volume and technicals — daily or weekly series, RSI and MACD, SMA or EMA at any length, Bollinger Bands, bars-ago offsets and crosses. Chain them with AND/OR branches, load a ready preset, save the screen for later and export the table to CSV. Or fire up to 8 scans at once and rank stocks by how many they confluence on.",
+    points: ["Up to 50 rows joined by AND/OR groups", "Daily & weekly series · bars-ago offsets · crosses & percent windows", "Multi-scan confluence, saved screens & CSV export"],
   },
   {
     slug: "chart",
     eyebrow: "Charts & overlays",
     title: "Every stock, annotated like a pro chart",
-    text: "Open any of the 3,545 NSE stocks for a two-year candlestick with the 20 MA, volume drawn inside the price pane, and the consolidation base overlaid with how long it has been forming and how deep it is. Timeframe, EMA length and RS-strength filters are one click away — MACD, Bollinger Bands and RSI stay optional to keep the default view clean.",
+    text: "Open any of the 3,500+ NSE stocks for a two-year candlestick with the 20 MA, volume drawn inside the price pane, and the consolidation base overlaid with how long it has been forming and how deep it is. Timeframe, EMA length and RS-strength filters are one click away — MACD, Bollinger Bands and RSI stay optional to keep the default view clean.",
     points: ["20 MA + in-pane volume by default", "Base overlay: sessions forming & depth", "MACD / Bollinger / RSI as opt-in filters"],
+  },
+  {
+    slug: "breadth",
+    eyebrow: "Market analytics",
+    title: "The market's mood, in one glance",
+    text: "The professional-grade breadth dashboard tracks the advance-decline line, new highs vs new lows and participation above every key average — then maps every industry on the RS × momentum rotation quadrant, ranks sector strength by what's strongest now and what's changing fastest, and scores sector momentum on daily, weekly and monthly RSI.",
+    points: ["A-D line · NH-NL · participation above key averages", "Sector rotation quadrant — industries & subgroups", "Sector momentum: daily / weekly / monthly RSI per index"],
   },
   {
     slug: "journal",

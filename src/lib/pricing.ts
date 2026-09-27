@@ -76,12 +76,13 @@ export const BASIC_FEATURES = [
 ];
 
 export const PRO_FEATURES = [
-  `All ${TOTAL_SCANS} scanners across ${TOTAL_CATEGORIES} categories — incl. 6 Trader Choice templates`,
+  `All ${TOTAL_SCANS} scanners across ${TOTAL_CATEGORIES} categories — incl. all 7 Trader Choice templates`,
+  "MarketSmith-style ratings on every result — universal RS rating, EPS score, EPS change % & Accumulation/Distribution rating",
   "Charts view for any scan — timeframe, EMA length, base overlay & RS-strength filters",
   "Base overlay with base-formation duration on every chart",
   "Sector rotation quadrant & sector strength (RS vs RS momentum)",
   "Sector momentum — daily / weekly / monthly RSI per index",
-  "Advanced screener — 15-condition builder with AND/OR groups: daily or weekly RSI/MACD, SMA/EMA at any length, Bollinger Bands, momentum, valuation",
+  "Advanced screener — Chartink-style visual builder, up to 50 rows with AND/OR groups: daily & weekly series, RSI/MACD, SMA/EMA at any length, Bollinger Bands, bars-ago offsets, crosses, momentum, volume & valuation",
   "Multi-scan confluence — run up to 8 scans together · saved screens & CSV export",
   "Unlimited watchlists & smart price alerts",
   "Trading journal & market calendar",
@@ -103,14 +104,14 @@ export const FEATURE_MATRIX: FeatureMatrixGroup[] = [
     group: "Scanners & screener",
     rows: [
       { feature: "One-click scanners", basic: `${BASIC_SCANS} basic scans`, pro: `All ${TOTAL_SCANS} scans · ${TOTAL_CATEGORIES} categories` },
-      { feature: "Trader Choice scans — 6 multi-condition trader templates (momentum, price action, breakout, volume, quality + 6-signal confluence)", basic: false, pro: true },
+      { feature: "Trader Choice scans — 7 multi-condition trader templates (momentum breakout, price action, RS breakout, volume trend, low-base, 6-signal confluence, fundamental-momentum stack)", basic: false, pro: true },
       { feature: "Multi-timeframe RSI scans (TradePulse extra)", basic: false, pro: true },
       { feature: "Scan result view", basic: "List", pro: "List + Charts grid" },
       { feature: "Universal RS rating on every result", basic: true, pro: true },
       { feature: "Sortable scan output — RS, change %, market cap, 1M/3M/6M return (list + charts)", basic: true, pro: true },
       { feature: "Add to watchlist from any result table or chart tile", basic: true, pro: true },
-      { feature: "Screener — search, sector & sort across all 3,545 NSE stocks", basic: false, pro: true },
-      { feature: "Condition builder — up to 15 filters in AND/OR groups: daily or weekly RSI & MACD, SMA/EMA (20/50/100/200), Bollinger Bands, momentum, volume, valuation", basic: false, pro: true },
+      { feature: "Screener — search, sector & sort across all 3,500+ NSE stocks", basic: false, pro: true },
+      { feature: "Condition builder — Chartink-style visual logic, up to 50 rows with AND/OR groups: daily & weekly series, RSI & MACD, SMA/EMA at any length, Bollinger Bands, bars-ago offsets, crosses & percent windows, momentum, volume, valuation", basic: false, pro: true },
       { feature: "Multi-scan confluence — run up to 8 scans together with a min-match threshold", basic: false, pro: true },
       { feature: "Saved screens & CSV export", basic: false, pro: true },
     ],
@@ -119,6 +120,7 @@ export const FEATURE_MATRIX: FeatureMatrixGroup[] = [
     group: "Charts & overlays",
     rows: [
       { feature: "Technical chart (MA/VOL/MACD/RSI panes, D/W/M, zoom & pan)", basic: true, pro: true },
+      { feature: "Global stock search — jump to any NSE symbol straight from the header", basic: true, pro: true },
       { feature: "Chart filters — timeframe, EMA length, base overlay, RS strength", basic: false, pro: true },
       { feature: "Base overlay with base-formation duration", basic: false, pro: true },
       { feature: "Crosshair OHLCV readout", basic: true, pro: true },
