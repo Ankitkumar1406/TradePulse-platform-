@@ -31,6 +31,9 @@ import { fmtPct, fmtPrice } from "@/lib/format";
 import { toast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
+/** How many table rows render before the "Show more" button (full result stays reachable). */
+const TABLE_PAGE = 100;
+
 // ================================================================ types
 
 interface ScanGroup {
@@ -44,7 +47,7 @@ interface SavedScreen {
 }
 
 interface MultiResponse {
-  min: number; requested: number; total: number; scanned: number; truncated: boolean;
+  min: number; requested: number; total: number; scanned: number;
   scanSummaries: { id: string; name: string; total: number }[];
   rows: {
     symbol: string; name: string; price: number | null; changePct: number | null;
@@ -692,9 +695,6 @@ export function ScreenerTab({
             ) : (
               <>
                 <MultiTable rows={multi.rows} requested={multi.requested} onSelectStock={onSelectStock} />
-                {multi.truncated && (
-                  <p className="text-center text-[11px] text-zinc-600">Showing the top 300 of {multi.total} confluence matches.</p>
-                )}
               </>
             )
           ) : (
@@ -720,6 +720,10 @@ function MultiTable({
   requested: number;
   onSelectStock: (s: string) => void;
 }) {
+  // confluence returns every matching stock now — render in pages
+  const [visible, setVisible] = useState(TABLE_PAGE);
+  const shown = rows.slice(0, visible);
+  const remaining = rows.length - shown.length;
   return (
     <Card className="border-zinc-800 bg-zinc-900/60">
       <CardContent className="p-0">
@@ -741,7 +745,7 @@ function MultiTable({
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {shown.map((r) => (
                 <tr
                   key={r.symbol}
                   onClick={() => onSelectStock(r.symbol)}
@@ -783,6 +787,17 @@ function MultiTable({
             </tbody>
           </table>
         </div>
+        {remaining > 0 && (
+          <div className="flex flex-col items-center gap-1 border-t border-zinc-800/70 py-3">
+            <button
+              onClick={() => setVisible((v) => v + TABLE_PAGE)}
+              className="rounded-md border border-zinc-800 px-4 py-1.5 text-xs text-zinc-300 transition-colors hover:border-zinc-700 hover:text-zinc-100"
+            >
+              Show more matches <span className="font-normal text-zinc-500">(+{Math.min(TABLE_PAGE, remaining)})</span>
+            </button>
+            <span className="text-[10px] text-zinc-600">Showing {shown.length} of {rows.length} confluence matches</span>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

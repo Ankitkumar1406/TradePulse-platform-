@@ -256,7 +256,6 @@ async function scanWithBars<T extends Record<string, unknown>>(opts: {
   columns: ScanColumn[];
   sortMetric?: string;
   sortDesc?: boolean;
-  cap?: number;
 }): Promise<ScanResult> {
   const candidates = (await db.stock.findMany({
     // equities only: names without a market cap are funds/ETFs (liquid
@@ -307,8 +306,9 @@ async function scanWithBars<T extends Record<string, unknown>>(opts: {
       return opts.sortDesc ? bn - an : an - bn;
     });
   }
-  const capped = rows.slice(0, opts.cap ?? 60);
-  return { columns: opts.columns, rows: capped, scanned: candidates.length };
+  // No cap — every stock matching the scan logic is returned. The UI paginates
+  // client-side, and the result is cached per session in ScanResult anyway.
+  return { columns: opts.columns, rows, scanned: candidates.length };
 }
 
 // ---------------------------------------------------------------- chart patterns
@@ -594,8 +594,7 @@ const gapEarningsScans: ScanDef[] = [
       });
       const filtered = stocks
         .filter((s) => s.prevClose && (s.open as number) > (s.prevClose as number) * 1.02)
-        .sort((a, b) => (b.open as number) / (b.prevClose as number) - (a.open as number) / (a.prevClose as number))
-        .slice(0, 60);
+        .sort((a, b) => (b.open as number) / (b.prevClose as number) - (a.open as number) / (a.prevClose as number));
       return {
         columns,
         rows: buildRows(filtered, columns, (s) => ({
@@ -654,8 +653,7 @@ const gapEarningsScans: ScanDef[] = [
       });
       const filtered = stocks
         .filter((s) => s.prevClose && (s.open as number) > (s.prevClose as number) * 1.02)
-        .sort((a, b) => (b.open as number) / (b.prevClose as number) - (a.open as number) / (a.prevClose as number))
-        .slice(0, 60);
+        .sort((a, b) => (b.open as number) / (b.prevClose as number) - (a.open as number) / (a.prevClose as number));
       return {
         columns,
         rows: buildRows(filtered, columns, (s) => ({
@@ -765,7 +763,7 @@ const volumeScans: ScanDef[] = [
       }));
       const hit = rows.filter((r) => (r.metrics.volRatio as number) >= 2);
       hit.sort((a, b) => (b.metrics.volRatio as number) - (a.metrics.volRatio as number));
-      return { columns, rows: hit.slice(0, 60), scanned: stocks.length };
+      return { columns, rows: hit, scanned: stocks.length };
     },
   },
   {
@@ -858,7 +856,7 @@ const volumeScans: ScanDef[] = [
       }));
       const hit = rows.filter((r) => (r.metrics.turnoverCr as number) >= 25 && (r.metrics.volRatio as number) >= 1.5);
       hit.sort((a, b) => (b.metrics.turnoverCr as number) - (a.metrics.turnoverCr as number));
-      return { columns, rows: hit.slice(0, 60), scanned: stocks.length };
+      return { columns, rows: hit, scanned: stocks.length };
     },
   },
 ];
@@ -894,7 +892,7 @@ const rsScans: ScanDef[] = [
       // fromHighPct = % below the 52w high (0 = at the high) — "within 10%" means <= 10
       const hit = rows.filter((r) => (r.metrics.rsRating as number) >= 80 && (r.metrics.fromHighPct as number) <= 10);
       hit.sort((a, b) => (b.metrics.rsRating as number) - (a.metrics.rsRating as number));
-      return { columns, rows: hit.slice(0, 60), scanned: stocks.length };
+      return { columns, rows: hit, scanned: stocks.length };
     },
   },
   {
@@ -925,7 +923,7 @@ const rsScans: ScanDef[] = [
       // 5–20% below the 52w high (fromHighPct is positive-below-high)
       const hit = rows.filter((r) => (r.metrics.rsRating as number) >= 85 && (r.metrics.fromHighPct as number) >= 5 && (r.metrics.fromHighPct as number) <= 20);
       hit.sort((a, b) => (b.metrics.rsRating as number) - (a.metrics.rsRating as number));
-      return { columns, rows: hit.slice(0, 60), scanned: stocks.length };
+      return { columns, rows: hit, scanned: stocks.length };
     },
   },
   {
@@ -937,14 +935,13 @@ const rsScans: ScanDef[] = [
         { key: "mom3M", label: "3M return", type: "pct" },
       ];
       // fromHighPct = % below the 52w high (0 = at the high). Take EVERY stock
-      // within 0.5% of it, closest first — the old top-60-by-mcap query cut
-      // valid names purely for their size.
+      // within 0.5% of it, closest first — no size or count cut.
       const stocks = await db.stock.findMany({
         where: { fromHighPct: { lte: 0.5 }, price: { not: null }, marketCap: { not: null } },
         orderBy: [{ fromHighPct: "asc" }, descNullsLast("marketCap")],
         select: { ...BASE_SELECT, fromHighPct: true, mom3M: true },
       });
-      return { columns, rows: buildRows(stocks, columns, (s) => ({ fromHighPct: s.fromHighPct as number, mom3M: s.mom3M as number })).slice(0, 60), scanned: await countUniverse() };
+      return { columns, rows: buildRows(stocks, columns, (s) => ({ fromHighPct: s.fromHighPct as number, mom3M: s.mom3M as number })), scanned: await countUniverse() };
     },
   },
 ];
@@ -1030,7 +1027,7 @@ const specialtyScans: ScanDef[] = [
       }));
       const hit = rows.filter((r) => Math.abs(r.metrics.changePct as number) >= 8.5 && (r.metrics.volRatio as number) >= 1.5);
       hit.sort((a, b) => Math.abs(b.metrics.changePct as number) - Math.abs(a.metrics.changePct as number));
-      return { columns, rows: hit.slice(0, 60), scanned: await countUniverse() };
+      return { columns, rows: hit, scanned: await countUniverse() };
     },
   },
   {
@@ -1049,7 +1046,7 @@ const specialtyScans: ScanDef[] = [
       });
       return {
         columns,
-        rows: buildRows(stocks, columns, (s) => ({ mom1M: s.mom1M as number, mom3M: s.mom3M as number, fromHighPct: s.fromHighPct as number })).slice(0, 60),
+        rows: buildRows(stocks, columns, (s) => ({ mom1M: s.mom1M as number, mom3M: s.mom3M as number, fromHighPct: s.fromHighPct as number })),
         scanned: await countUniverse(),
       };
     },
@@ -1073,7 +1070,7 @@ const specialtyScans: ScanDef[] = [
       });
       return {
         columns,
-        rows: buildRows(stocks, columns, (s) => ({ rsi14: s.rsi14 as number, fromHighPct: s.fromHighPct as number, changePct: s.changePct as number })).slice(0, 60),
+        rows: buildRows(stocks, columns, (s) => ({ rsi14: s.rsi14 as number, fromHighPct: s.fromHighPct as number, changePct: s.changePct as number })),
         scanned: await countUniverse(),
       };
     },
@@ -1100,7 +1097,7 @@ async function multiTimeframeRsi(dailyMin: number, dailyMax: number): Promise<Sc
   // bars load in bounded chunks — a full-universe 520-bar pull in one query
   // materialises ~1.5M rows (OOM precedent on the 4GB box)
   const CHUNK = 400;
-  outer: for (let i = 0; i < candidates.length; i += CHUNK) {
+  for (let i = 0; i < candidates.length; i += CHUNK) {
     const batch = candidates.slice(i, i + CHUNK);
     const barsMap = await loadBarsForSymbols(batch.map((s) => s.symbol), 520);
     for (const s of batch) {
@@ -1124,7 +1121,6 @@ async function multiTimeframeRsi(dailyMin: number, dailyMax: number): Promise<Sc
           dRSI: Number(dRsi.toFixed(1)), fromHighPct: s.fromHighPct,
         },
       });
-      if (rows.length >= 60) break outer;
     }
   }
   rows.sort((a, b) => (a.metrics.dRSI as number) - (b.metrics.dRSI as number));
@@ -1339,7 +1335,6 @@ const traderChoiceScans: ScanDef[] = [
           { key: "breakPct", label: "Above 4W high", type: "pct" },
         ],
         sortMetric: "turnoverCr", sortDesc: true,
-        cap: 200,
       }),
   },
   {

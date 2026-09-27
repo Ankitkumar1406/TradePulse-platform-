@@ -33,6 +33,9 @@ const TOTAL_CATEGORIES = 8;
 /** How many chart tiles the Charts view shows before the "View more charts" button. */
 const CHART_PAGE = 12;
 
+/** How many table rows render before the "Show more" button (full result stays reachable). */
+const TABLE_PAGE = 100;
+
 function metricText(v: number | string | null, type: string): string {
   if (v == null) return "—";
   if (typeof v === "string") return v;
@@ -440,6 +443,18 @@ function ChartsView({
 }
 
 function ScanTable({ result, onSelectStock }: { result: ScanResult; onSelectStock: (s: string) => void }) {
+  // scans return every match now — render in pages so a 1,000-row result
+  // doesn't freeze the DOM; "Show more" reveals the rest
+  const [visible, setVisible] = useState(TABLE_PAGE);
+  // reset pagination whenever the result changes (new scan) — render-phase
+  // adjustment, the React-blessed alternative to setState-in-effect
+  const [lastRows, setLastRows] = useState(result.rows);
+  if (lastRows !== result.rows) {
+    setLastRows(result.rows);
+    setVisible(TABLE_PAGE);
+  }
+  const shown = result.rows.slice(0, visible);
+  const remaining = result.rows.length - shown.length;
   return (
     <Card className="border-zinc-800 bg-zinc-900/60">
       <CardContent className="p-0">
@@ -467,7 +482,7 @@ function ScanTable({ result, onSelectStock }: { result: ScanResult; onSelectStoc
                 </tr>
               </thead>
               <tbody>
-                {result.rows.map((r) => (
+                {shown.map((r) => (
                   <tr
                     key={r.symbol}
                     onClick={() => onSelectStock(r.symbol)}
@@ -503,6 +518,17 @@ function ScanTable({ result, onSelectStock }: { result: ScanResult; onSelectStoc
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+        {remaining > 0 && (
+          <div className="flex flex-col items-center gap-1 border-t border-zinc-800/70 py-3">
+            <button
+              onClick={() => setVisible((v) => v + TABLE_PAGE)}
+              className="rounded-md border border-zinc-800 px-4 py-1.5 text-xs text-zinc-300 transition-colors hover:border-zinc-700 hover:text-zinc-100"
+            >
+              Show more matches <span className="font-normal text-zinc-500">(+{Math.min(TABLE_PAGE, remaining)})</span>
+            </button>
+            <span className="text-[10px] text-zinc-600">Showing {shown.length} of {result.rows.length} matches</span>
           </div>
         )}
       </CardContent>

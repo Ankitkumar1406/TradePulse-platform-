@@ -8,7 +8,6 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 120;
 
 const MAX_SCANS = 8;
-const MAX_ROWS = 300;
 
 interface MultiRow {
   symbol: string;
@@ -113,8 +112,8 @@ export async function POST(req: Request) {
       scanSummaries,
       total: rows.length,
       scanned: Math.max(...results.map((r) => r.result.scanned), 0),
-      rows: rows.slice(0, MAX_ROWS),
-      truncated: rows.length > MAX_ROWS,
+      // full result set — the UI paginates client-side
+      rows,
     });
   } catch (e) {
     return NextResponse.json(
