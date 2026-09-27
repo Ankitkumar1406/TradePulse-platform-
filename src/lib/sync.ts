@@ -17,6 +17,17 @@ import { recomputeRatings } from "@/lib/ratings";
 
 export const STALE_DATA_MS = 20 * 3600 * 1000;
 
+/** Skip the quote (universe) phase on refresh/daily when the last snapshot is younger than this. */
+export const UNIVERSE_FRESH_SKIP_MS = 2 * 3600 * 1000;
+
+/** How long ago the universe snapshot was taken (max universeSynced), or Infinity when never synced. */
+async function universeFreshMs(): Promise<number> {
+  const agg = await db.stock.aggregate({ _max: { universeSynced: true } });
+  const last = agg._max.universeSynced;
+  if (!last) return Infinity;
+  return Date.now() - last.getTime();
+}
+
 export type SyncMode = "full" | "refresh" | "daily";
 
 interface SyncGlobals {
@@ -52,11 +63,16 @@ async function runSync(mode: SyncMode) {
       await runUniversePhase();
       await runClosesPhase();
     } else {
-      // refresh / daily: quotes first, then refresh anything stale
-      await Promise.all([
-        runUniversePhase().catch((e) => console.error("[sync] universe phase:", e.message)),
-        runClosesPhase().catch((e) => console.error("[sync] closes phase:", e.message)),
-      ]);
+      // refresh / daily: quotes first (unless the universe snapshot is still
+      // fresh — the symbol list barely moves intraday and re-fetching all
+      // 3,548 quotes every refresh was pure waste), then refresh stale closes.
+      const skipUniverse = await universeFreshMs() > UNIVERSE_FRESH_SKIP_MS;
+      if (skipUniverse) {
+        console.log("[sync] universe snapshot fresh — skipping quote re-fetch");
+      } else {
+        await runUniversePhase().catch((e) => console.error("[sync] universe phase:", e.message));
+      }
+      await runClosesPhase().catch((e) => console.error("[sync] closes phase:", e.message));
     }
 
     await db.syncState.updateMany({ where: { id: "main" }, data: { phase: "done", status: "done" } });
@@ -104,37 +120,45 @@ async function runUniversePageLoop() {
 
 async function upsertQuotes(quotes: ScreenerQuote[]) {
   const now = new Date();
-  for (const q of quotes) {
-    if (!q.symbol) continue;
-    const data = {
-      name: q.longName || q.shortName || q.symbol,
-      exchangeCode: q.exchange ?? null,
-      price: q.regularMarketPrice ?? null,
-      prevClose: q.regularMarketPreviousClose ?? null,
-      changePct: q.regularMarketChangePercent ?? null,
-      open: q.regularMarketOpen ?? null,
-      dayHigh: q.regularMarketDayHigh ?? null,
-      dayLow: q.regularMarketDayLow ?? null,
-      volume: q.regularMarketVolume ?? null,
-      avgVol3M: q.averageDailyVolume3Month ?? null,
-      // marketCap is null-PRESERVING: Yahoo omits the field outright for a handful
-      // of listed names (e.g. ARTEMISMED.NS — absent on both .NS and .BO), so a
-      // blind `?? null` would wipe a good value on every sync cycle.
-      ...(q.marketCap != null ? { marketCap: q.marketCap } : {}),
-      peTTM: q.trailingPE ?? null,
-      epsTTM: q.epsTrailingTwelveMonths ?? null,
-      bookValue: q.bookValue ?? null,
-      pbRatio: q.priceToBook ?? null,
-      divYield: q.trailingAnnualDividendYield != null ? q.trailingAnnualDividendYield * 100 : null,
-      high52: q.fiftyTwoWeekHigh ?? null,
-      low52: q.fiftyTwoWeekLow ?? null,
-      sma50Yahoo: q.fiftyDayAverage ?? null,
-      sma200Yahoo: q.twoHundredDayAverage ?? null,
-      universeSynced: now,
-      quoteTime: q.regularMarketTime ? new Date(q.regularMarketTime * 1000) : now,
-    };
-    await db.stock.upsert({ where: { symbol: q.symbol }, create: { symbol: q.symbol, ...data }, update: data });
-  }
+  // One transaction per page: 250 rows commit together instead of 250 separate
+  // WAL commits. Keeps write-lock churn low so API readers never queue behind
+  // the sync (the pre-batching version fired 3,548 individual upserts per pass
+  // and was a major contributor to the slow-page/repo-lock degradation).
+  await db.$transaction(
+    quotes
+      .filter((q) => Boolean(q.symbol))
+      .map((q) => {
+        const data = {
+        name: q.longName || q.shortName || q.symbol,
+        exchangeCode: q.exchange ?? null,
+        price: q.regularMarketPrice ?? null,
+        prevClose: q.regularMarketPreviousClose ?? null,
+        changePct: q.regularMarketChangePercent ?? null,
+        open: q.regularMarketOpen ?? null,
+        dayHigh: q.regularMarketDayHigh ?? null,
+        dayLow: q.regularMarketDayLow ?? null,
+        volume: q.regularMarketVolume ?? null,
+        avgVol3M: q.averageDailyVolume3Month ?? null,
+        // marketCap is null-PRESERVING: Yahoo omits the field outright for a handful
+        // of listed names (e.g. ARTEMISMED.NS — absent on both .NS and .BO), so a
+        // blind `?? null` would wipe a good value on every sync cycle.
+        ...(q.marketCap != null ? { marketCap: q.marketCap } : {}),
+        peTTM: q.trailingPE ?? null,
+        epsTTM: q.epsTrailingTwelveMonths ?? null,
+        bookValue: q.bookValue ?? null,
+        pbRatio: q.priceToBook ?? null,
+        divYield: q.trailingAnnualDividendYield != null ? q.trailingAnnualDividendYield * 100 : null,
+        high52: q.fiftyTwoWeekHigh ?? null,
+        low52: q.fiftyTwoWeekLow ?? null,
+        sma50Yahoo: q.fiftyDayAverage ?? null,
+        sma200Yahoo: q.twoHundredDayAverage ?? null,
+        universeSynced: now,
+        quoteTime: q.regularMarketTime ? new Date(q.regularMarketTime * 1000) : now,
+      };
+      return db.stock.upsert({ where: { symbol: q.symbol }, create: { symbol: q.symbol, ...data }, update: data });
+    }),
+
+  );
 }
 
 async function runUniversePhase() {
@@ -175,11 +199,21 @@ export async function runClosesPhase(opts?: { staleCutoff?: Date }) {
     try {
       const sparks = await fetchSpark(symbols, "2y");
       const bySymbol = new Map(sparks.map((s) => [s.symbol, s]));
+      // Compute all payloads first, then commit the whole batch in ONE
+      // transaction — 20 rows per commit instead of 20 separate WAL commits.
+      const updates: { symbol: string; data: Record<string, unknown> }[] = [];
       for (const stock of batch) {
         const spark = bySymbol.get(stock.symbol);
         if (!spark) continue;
-        const ok = await applySparkToStock(stock, spark);
-        if (ok) done++;
+        const data = buildSparkUpdate(stock, spark);
+        if (data) updates.push({ symbol: stock.symbol, data });
+      }
+      if (updates.length > 0) {
+        await db.$transaction(
+          updates.map((u) => db.stock.update({ where: { symbol: u.symbol }, data: u.data })),
+      
+        );
+        done += updates.length;
       }
     } catch (e) {
       console.error("[sync] spark batch failed:", e instanceof Error ? e.message : e);
@@ -189,16 +223,16 @@ export async function runClosesPhase(opts?: { staleCutoff?: Date }) {
   }
 }
 
-async function applySparkToStock(
+function buildSparkUpdate(
   stock: { symbol: string; high52: number | null; low52: number | null; volume: number | null; avgVol3M: number | null },
   spark: SparkPoint
-): Promise<boolean> {
+): Record<string, unknown> | null {
   const series: [number, number][] = [];
   for (let i = 0; i < spark.timestamp.length; i++) {
     const c = spark.close[i];
     if (c != null && Number.isFinite(c)) series.push([spark.timestamp[i], c]);
   }
-  if (series.length < 2) return false; // no usable series at all — computeIndicators null-safe below handles short histories (recent IPOs)
+  if (series.length < 2) return null; // no usable series at all — computeIndicators null-safe below handles short histories (recent IPOs)
 
   const closes = series.map((s) => s[1]);
   const ind = computeIndicators(closes);
@@ -211,7 +245,7 @@ async function applySparkToStock(
   const fromLowPct = low52 > 0 ? Math.max(0, ((price - low52) / low52) * 100) : null;
   const volSpike = stock.volume != null && stock.avgVol3M != null && stock.avgVol3M > 0 ? stock.volume > 2 * stock.avgVol3M : null;
 
-  const data = {
+  return {
     sma20: ind.sma20,
     sma50: ind.sma50,
     sma200: ind.sma200,
@@ -247,8 +281,6 @@ async function applySparkToStock(
     closes: JSON.stringify(series),
     closesSynced: new Date(),
   };
-  await db.stock.update({ where: { symbol: stock.symbol }, data });
-  return true;
 }
 
 // ---------------------------------------------------------------- status

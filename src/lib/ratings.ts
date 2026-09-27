@@ -48,13 +48,26 @@ export function adGrade(ratio: number): string {
   return "E";
 }
 
-/** Trailing return over `days` trading days from a close series (decimal), or null. */
-function trailingReturn(closes: number[], days: number): number | null {
-  if (closes.length <= days) return null;
-  const past = closes[closes.length - 1 - days];
-  const now = closes[closes.length - 1];
-  if (!past || past <= 0) return null;
-  return now / past - 1;
+/**
+ * Weighted 12-month RS momentum from five spot closes (t, t-63, t-126,
+ * t-189, t-252). Needs at least ~6 months of history; older anchors fall
+ * back to the newest available shorter window, exactly like the original
+ * series-based computation.
+ */
+function weightedRs(
+  c0: number | null, c63: number | null, c126: number | null, c189: number | null, c252: number | null
+): number | null {
+  if (c0 == null || c63 == null || c0 <= 0 || c63 <= 0) return null;
+  const r3 = c0 / c63 - 1;
+  const r6 = c126 != null && c126 > 0 ? c0 / c126 - 1 : r3;
+  const r9 = c189 != null && c189 > 0 ? c0 / c189 - 1 : r6;
+  const r12 = c252 != null && c252 > 0 ? c0 / c252 - 1 : r6;
+  return 0.4 * r3 + 0.2 * r6 + 0.2 * r9 + 0.2 * r12;
+}
+
+/** Give the event loop a beat so queued API renders (and their DB queries) run. */
+async function yieldLoop(): Promise<void> {
+  await new Promise((r) => setImmediate(r));
 }
 
 interface AdRow {
@@ -77,34 +90,72 @@ export async function recomputeRatings(): Promise<number> {
       where: { price: { not: null } },
       select: {
         symbol: true,
-        closes: true,
         epsQuarterlyGrowth: true,
         netIncome3YCagr: true,
         revenueQoQGrowth: true,
       },
     });
 
-    // ---- RS rating (from the stored 2y close series) --------------------
+    // ---- RS rating (weighted 12M momentum) ------------------------------
+    // Set-based: pull ONLY the 5 close prices needed per symbol (t, t-63,
+    // -126, -189, -252) from DailyBar via one window query. The previous
+    // implementation streamed the full 2y `closes` JSON column for all 3,548
+    // stocks (~100 MB) and JSON.parsed every row — that blocked the event
+    // loop for seconds after every sync and ballooned the process to ~2 GB,
+    // making every API route crawl. Symbols missing from DailyBar (rare:
+    // recent IPOs / SMEs) fall back to parsing their stored closes.
+    type MomentumRow = { symbol: string; c0: number | null; c63: number | null; c126: number | null; c189: number | null; c252: number | null };
+    const momRows = await db.$queryRaw<MomentumRow[]>(Prisma.sql`
+      SELECT symbol,
+             MAX(CASE WHEN rn = 1        THEN close END) AS c0,
+             MAX(CASE WHEN rn = 64       THEN close END) AS c63,
+             MAX(CASE WHEN rn = 127      THEN close END) AS c126,
+             MAX(CASE WHEN rn = 190      THEN close END) AS c189,
+             MAX(CASE WHEN rn = 253      THEN close END) AS c252
+        FROM (
+          SELECT symbol, close,
+                 ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY date DESC) AS rn
+            FROM DailyBar
+        )
+       WHERE rn <= 253
+       GROUP BY symbol
+    `);
+
     const rsRaw = new Map<string, number>();
-    for (const s of stocks) {
-      if (!s.closes) continue;
+    for (const r of momRows) {
+      const w = weightedRs(r.c0, r.c63, r.c126, r.c189, r.c252);
+      if (w != null) rsRaw.set(r.symbol, w);
+    }
+
+    // Fallback for symbols with closes but no DailyBar coverage. NOT EXISTS
+    // via raw SQL — a Prisma `notIn` with ~3k symbols blows the SQLite
+    // parameter limit.
+    const missingRows = await db.$queryRaw<{ symbol: string; closes: string }[]>(Prisma.sql`
+      SELECT s.symbol, s.closes
+        FROM Stock s
+       WHERE s.price IS NOT NULL AND s.closes IS NOT NULL
+         AND NOT EXISTS (SELECT 1 FROM DailyBar d WHERE d.symbol = s.symbol)
+    `);
+    for (const s of missingRows) {
       let closes: number[];
       try {
-        closes = (JSON.parse(s.closes) as [number, number][]).map((p) => p[1]);
+        closes = (JSON.parse(s.closes as string) as [number, number][]).map((p) => p[1]);
       } catch {
         continue;
       }
-      const r3 = trailingReturn(closes, 63);
-      const r6 = trailingReturn(closes, 126);
-      const r9 = trailingReturn(closes, 189);
-      const r12 = trailingReturn(closes, 252);
-      if (r3 == null || r6 == null) continue; // need at least ~6 months of history
-      const w = 0.4 * r3 + 0.2 * (r6 ?? r3) + 0.2 * (r9 ?? r6) + 0.2 * (r12 ?? r6);
-      rsRaw.set(s.symbol, w);
+      const w = weightedRs(
+        closes[closes.length - 1] ?? null,
+        closes[closes.length - 1 - 63] ?? null,
+        closes[closes.length - 1 - 126] ?? null,
+        closes[closes.length - 1 - 189] ?? null,
+        closes[closes.length - 1 - 252] ?? null
+      );
+      if (w != null) rsRaw.set(s.symbol, w);
     }
     const rsSorted = [...rsRaw.values()].sort((a, b) => a - b);
     const rsRating = new Map<string, number>();
     for (const [sym, v] of rsRaw) rsRating.set(sym, percentile1to99(rsSorted, v));
+    await yieldLoop(); // let queued API renders run before the next heavy phase
 
     // ---- EPS score (composite percentile of the three growth metrics) ---
     const epsQ = stocks.map((s) => ({ sym: s.symbol, v: s.epsQuarterlyGrowth })).filter((x): x is { sym: string; v: number } => x.v != null);
@@ -131,6 +182,7 @@ export async function recomputeRatings(): Promise<number> {
     }
     const epsRating = new Map<string, number>();
     for (const [sym, comp] of epsComposite) epsRating.set(sym, Math.min(99, Math.max(1, Math.round(comp * 98) + 1)));
+    await yieldLoop();
 
     // ---- A/D rating (13-week up/down volume from DailyBar) --------------
     const adRows = await db.$queryRaw<AdRow[]>(Prisma.sql`
