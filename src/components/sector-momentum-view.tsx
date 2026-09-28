@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -216,6 +216,8 @@ function MomentumTable({
   const n = rows.length;
   const leaderCutoff = n >= 6 ? 3 : 0;
   const laggardCutoff = n >= 6 ? n - 2 : 0;
+  const hasBreadth = title === "Broad sectors";
+  const colCount = 9 + (hasBreadth ? 1 : 0);
 
   return (
     <Card className="border-zinc-800 bg-zinc-900/60">
@@ -234,16 +236,22 @@ function MomentumTable({
             <thead>
               <tr className="border-b border-zinc-800/60 text-left text-[10px] uppercase tracking-wider text-zinc-400">
                 {SORT_COLUMNS.filter((c) => c.key !== "breadthAbove50" || title === "Broad sectors").map((c) => (
-                  <th key={c.key} className={cn("px-3 py-2 font-medium", c.numeric && "text-right", c.key === "rank" && "pl-4")}>
-                    <button
-                      className={cn("inline-flex items-center gap-0.5 transition-colors hover:text-zinc-200", sort.key === c.key && "text-zinc-100")}
-                      onClick={() => setSort((s) => (s.key === c.key ? { ...s, dir: s.dir === "asc" ? "desc" : "asc" } : { key: c.key, dir: c.defaultDir }))}
-                      aria-label={`Sort by ${c.label}`}
-                    >
-                      {c.label}
-                      {sort.key === c.key && <span className="text-[8px]">{sort.dir === "asc" ? "▲" : "▼"}</span>}
-                    </button>
-                  </th>
+                  <Fragment key={c.key}>
+                    <th className={cn("px-3 py-2 font-medium", c.numeric && "text-right", c.key === "rank" && "pl-4")}>
+                      <button
+                        className={cn("inline-flex items-center gap-0.5 transition-colors hover:text-zinc-200", sort.key === c.key && "text-zinc-100")}
+                        onClick={() => setSort((s) => (s.key === c.key ? { ...s, dir: s.dir === "asc" ? "desc" : "asc" } : { key: c.key, dir: c.defaultDir }))}
+                        aria-label={`Sort by ${c.label}`}
+                      >
+                        {c.label}
+                        {sort.key === c.key && <span className="text-[8px]">{sort.dir === "asc" ? "▲" : "▼"}</span>}
+                      </button>
+                    </th>
+                    {/* name column lives between # and the RSI columns in the body — emit its header there so cells line up */}
+                    {c.key === "rank" && (
+                      <th className="px-3 py-2 font-medium">{hasBreadth ? "Sector" : "Index"}</th>
+                    )}
+                  </Fragment>
                 ))}
                 <th className="px-3 py-2 font-medium">Strength</th>
                 <th className="w-6 px-2 py-2" />
@@ -253,7 +261,7 @@ function MomentumTable({
               {sorted.map((r) => {
                 const isOpen = expanded === r.key;
                 return (
-                  <ExpandRow key={r.key} isOpen={isOpen} onToggle={() => setExpanded(isOpen ? null : r.key)} row={r} onScanSector={onScanSector} leaderCutoff={leaderCutoff} laggardCutoff={laggardCutoff} />
+                  <ExpandRow key={r.key} isOpen={isOpen} onToggle={() => setExpanded(isOpen ? null : r.key)} row={r} onScanSector={onScanSector} leaderCutoff={leaderCutoff} laggardCutoff={laggardCutoff} colCount={colCount} />
                 );
               })}
             </tbody>
@@ -298,7 +306,7 @@ function MomentumTable({
 }
 
 function ExpandRow({
-  row: r, isOpen, onToggle, onScanSector, leaderCutoff, laggardCutoff,
+  row: r, isOpen, onToggle, onScanSector, leaderCutoff, laggardCutoff, colCount,
 }: {
   row: MomentumRow;
   isOpen: boolean;
@@ -306,6 +314,7 @@ function ExpandRow({
   onScanSector?: (sector: string) => void;
   leaderCutoff: number;
   laggardCutoff: number;
+  colCount: number;
 }) {
   return (
     <>
@@ -347,7 +356,7 @@ function ExpandRow({
       </tr>
       {isOpen && (
         <tr className="border-b border-zinc-800/40 bg-zinc-950/40">
-          <td colSpan={10} className="px-4 py-3">
+          <td colSpan={colCount} className="px-4 py-3">
             <RowDetail row={r} onScanSector={onScanSector} />
           </td>
         </tr>
