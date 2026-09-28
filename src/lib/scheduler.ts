@@ -17,6 +17,7 @@ import { startBarsTrickle } from "@/lib/trickle";
 import { expectedLatestBarDate } from "@/lib/bar-sync";
 import { processDueRenewals } from "@/lib/payments";
 import { runPostSyncPipeline, isPostPipelineRunning } from "@/lib/pipeline";
+import { warmBreadthCache } from "@/lib/breadth-history";
 
 const IST_OFFSET_MIN = 330; // UTC+5:30
 const FIRE_UTC_H = 10; // 16:00 IST == 10:30 UTC
@@ -125,6 +126,11 @@ export function startDailySyncScheduler() {
   g.__tpSchedulerLive = true;
 
   arm();
+
+  // Warm the market-breadth history cache in the background so the breadth
+  // page renders its charts on the very first visit instead of computing a
+  // ~1.3M-row window scan on demand (seconds of blank charts after boot).
+  void warmBreadthCache();
 
   // Hourly autopay renewal pass
   setInterval(() => {

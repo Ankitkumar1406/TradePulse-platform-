@@ -113,8 +113,10 @@ export function MarketTab({ onSelectStock, isPro = false, onUpgrade, onOpenWatch
     placeholderData: (prev) => prev,
   });
 
-  // Breadth history + breakdowns — heavy server-side computation, cached;
-  // only refreshed alongside new sessions.
+  // Breadth history + breakdowns — heavy server-side computation, cached in
+  // module memory and warmed at server boot; only refreshed alongside new
+  // sessions. placeholderData keeps already-loaded charts visible while a
+  // background refetch runs instead of flashing them away.
   const { data: breadth } = useQuery<BreadthAnalytics>({
     queryKey: ["breadth-history"],
     queryFn: async () => {
@@ -124,6 +126,7 @@ export function MarketTab({ onSelectStock, isPro = false, onUpgrade, onOpenWatch
     },
     staleTime: 10 * 60_000,
     refetchInterval: 15 * 60_000,
+    placeholderData: (prev) => prev,
   });
 
   // Sector analytics only fetched when the rotation/strength view is open.
@@ -281,13 +284,19 @@ function BreadthView({
         </CardContent>
       </Card>
 
-      {/* A/D line + NH-NL trend */}
-      {breadth && breadth.history.length >= 4 && (
+      {/* A/D line + NH-NL trend — skeleton-reserved while history loads so
+          the charts never pop in late and shift the layout */}
+      {!breadth ? (
+        <div className="grid gap-4 xl:grid-cols-3">
+          <Skeleton className="h-64 bg-zinc-900 xl:col-span-2" />
+          <Skeleton className="h-64 bg-zinc-900" />
+        </div>
+      ) : breadth.history.length >= 4 ? (
         <div className="grid gap-4 xl:grid-cols-3">
           <div className="xl:col-span-2"><ADLineCard history={breadth.history} /></div>
           <NhNlCard history={breadth.history} />
         </div>
-      )}
+      ) : null}
 
       {/* Movers */}
       <div className="flex items-center justify-between gap-3">
@@ -326,9 +335,18 @@ function BreadthView({
         <MoverCard title="Most Active by Volume" rows={data.mostActive} onSelectStock={onSelectStock} showVolume />
       </div>
 
-      {/* Sector breadth heatmap + cap/F&O splits */}
-      {breadth && breadth.sectors.length > 0 && <SectorBreadthGrid sectors={breadth.sectors} />}
-      {breadth && <SegmentCards segments={breadth.segments} fno={breadth.fno} />}
+      {/* Sector breadth heatmap + cap/F&O splits — reserved while loading */}
+      {!breadth ? (
+        <div className="space-y-4">
+          <Skeleton className="h-72 bg-zinc-900" />
+          <Skeleton className="h-44 bg-zinc-900" />
+        </div>
+      ) : (
+        <>
+          {breadth.sectors.length > 0 && <SectorBreadthGrid sectors={breadth.sectors} />}
+          <SegmentCards segments={breadth.segments} fno={breadth.fno} />
+        </>
+      )}
 
       {/* Sector performance */}
       <Card className="bg-zinc-900/60 border-zinc-800">
