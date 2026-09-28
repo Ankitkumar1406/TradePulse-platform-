@@ -3,7 +3,7 @@
  * and the scheduler date math. Run: bun scripts/test-momentum.ts
  */
 import { classifyMomentum, momentumSort, MOMENTUM_CLASSES } from "../src/lib/momentum-classes";
-import { median } from "../src/lib/sector-momentum";
+import { median, buildCompositeSeries } from "../src/lib/sector-momentum";
 
 let passed = 0;
 let failed = 0;
@@ -31,7 +31,8 @@ eq("short: 70/30/50", classifyMomentum(70, 30, 50), "short");
 eq("long: 55/65/70", classifyMomentum(55, 65, 70), "long");
 // weekly > 60, monthly <= 60, daily >= 40 => medium-term strength
 eq("medium: 55/65/55", classifyMomentum(55, 65, 55), "medium");
-eq("medium: 40/61/50", classifyMomentum(40, 61, 50), "medium");
+// d=40 sits exactly on the weak boundary => weak, not neutral
+eq("medium boundary 40/61/50", classifyMomentum(40, 61, 50), "shortWeak");
 // all < 40 => weakness on all timeframes
 eq("weakAll: 30/35/25", classifyMomentum(30, 35, 25), "weakAll");
 // monthly & weekly < 40, daily >= 40 => long-term weakness
@@ -48,24 +49,51 @@ eq("short again: 65/35/45", classifyMomentum(65, 35, 45), "short");
 // 30/35/50: weekly broken below 40 while monthly >= 40 and daily <= 60 -> medium-term weakness
 eq("mediumWeak again: 30/35/50", classifyMomentum(30, 35, 50), "mediumWeak");
 
-// boundary semantics: > 60 is strict, <= 60 not strong
-eq("boundary d=60", classifyMomentum(60, 65, 65), "long");
+// boundary semantics: strong = >= 60, weak = <= 40 (published rule)
+eq("boundary d=60 strong", classifyMomentum(60, 65, 65), "high");
 eq("boundary all=60.5", classifyMomentum(60.5, 60.5, 60.5), "high");
-eq("boundary w=60 short", classifyMomentum(61, 60, 55), "short");
+eq("boundary w=60 medium", classifyMomentum(61, 60, 55), "medium");
+eq("boundary d=40 weak", classifyMomentum(40, 61, 50), "shortWeak");
+
+// ---- the exact cases from the credibility review ----
+// NIFTY IT 31.3/40.0/34.8: weekly sits exactly on 40 -> weak => ALL three weak
+eq("IT 31.3/40.0/34.8", classifyMomentum(31.3, 40.0, 34.8), "weakAll");
+// NIFTY 50 34.2/37.2/40.9: daily+weekly weak, monthly holds => medium-term weakness
+eq("N50 34.2/37.2/40.9", classifyMomentum(34.2, 37.2, 40.9), "mediumWeak");
+// NIFTY BANK 37.8/43.1/50.9: only daily weak => short-term weakness
+eq("BANK 37.8/43.1/50.9", classifyMomentum(37.8, 43.1, 50.9), "shortWeak");
 
 // ---- sorting ----
 const rows = [
-  { classification: "mixed", monthlyRSI: 55 },
-  { classification: "high", monthlyRSI: 62 },
-  { classification: "short", monthlyRSI: 80 },
-  { classification: "high", monthlyRSI: 71 },
+  { classification: "mixed", dailyRSI: 50, weeklyRSI: 50, monthlyRSI: 55 },
+  { classification: "high", dailyRSI: 63, weeklyRSI: 60, monthlyRSI: 62 },
+  { classification: "short", dailyRSI: 70, weeklyRSI: 55, monthlyRSI: 80 },
+  { classification: "high", dailyRSI: 65, weeklyRSI: 70, monthlyRSI: 71 },
 ];
 rows.sort(momentumSort);
-eq("sort first is high/71", rows[0].monthlyRSI, 71);
-eq("sort second is high/62", rows[1].monthlyRSI, 62);
+eq("sort first is high/71 composite", rows[0].monthlyRSI, 71);
+eq("sort second is high/62 composite", rows[1].monthlyRSI, 62);
 eq("sort third is short", rows[2].classification, "short");
 eq("sort last is mixed", rows[3].classification, "mixed");
 eq("9 classes defined", Object.keys(MOMENTUM_CLASSES).length, 9);
+
+// ---- composite basket builder ----
+{
+  const start = Date.UTC(2024, 8, 1) / 1000;
+  const mk = (base: number, drift: number) =>
+    Array.from({ length: 300 }, (_, i) => [start + i * 86400, base + drift * i] as [number, number]);
+  const members = Array.from({ length: 10 }, (_, i) => ({
+    symbol: `S${i}.NS`,
+    closes: mk(100 + i, 0.02 + i * 0.01),
+    marketCap: 1_000_000 * (i + 1),
+  }));
+  const level = buildCompositeSeries(members);
+  eq("composite has sessions", level.length > 0, true);
+  eq("composite ends above 1 (updrift weights)", level[level.length - 1][1] > 1.05, true);
+  eq("composite finite levels", level.every(([, v]) => Number.isFinite(v)), true);
+  const tooFew = buildCompositeSeries(members.slice(0, 2));
+  eq("composite needs >= 8 members", tooFew.length, 0);
+}
 
 // ---- median ----
 eq("median odd", median([3, 1, 2]), 2);

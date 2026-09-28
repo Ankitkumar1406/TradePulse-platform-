@@ -96,10 +96,13 @@ export function ScreenerTab({
   onSelectStock,
   isPro,
   onUpgrade,
+  initialSector,
 }: {
   onSelectStock: (s: string) => void;
   isPro: boolean;
   onUpgrade?: () => void;
+  /** Pre-fills the sector filter (e.g. "Run scan on this sector" from market views). */
+  initialSector?: string;
 }) {
   const qc = useQueryClient();
   const [mode, setMode] = useState<"filters" | "builder" | "multi">("filters");
@@ -140,7 +143,7 @@ export function ScreenerTab({
   // ------------------------------------------------------------ filters mode
   const [q, setQ] = useState("");
   const [debouncedQ, setDebouncedQ] = useState("");
-  const [sector, setSector] = useState("all");
+  const [sector, setSector] = useState(initialSector ?? "all");
   const [sort, setSort] = useState("marketCap");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
   const [page, setPage] = useState(1);

@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { BarChart3, Check, ChevronDown, ChevronRight, TrendingUp } from "lucide-react";
+import { BarChart3, ChevronRight, TrendingUp } from "lucide-react";
 import { changeColor, fmtPct, fmtPrice, fmtVol } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { SectorRotation, SectorStrength, SectorSkeleton, type SectorPayload } from "@/components/sector-views";
@@ -42,61 +42,34 @@ const VIEW_ITEMS: { id: SubView; label: string; hint: string }[] = [
   { id: "strength", label: "Sector strength", hint: "Strongest now · biggest change" },
 ];
 
-function MarketViewDropdown({ value, onChange }: { value: SubView; onChange: (v: SubView) => void }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); };
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  const active = VIEW_ITEMS.find((v) => v.id === value) ?? VIEW_ITEMS[0];
-
+/** Visible tab row — sibling views stay discoverable (no hidden dropdown). */
+function MarketViewTabs({ value, onChange }: { value: SubView; onChange: (v: SubView) => void }) {
   return (
-    <div ref={ref} className="relative">
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-8 gap-2 border-zinc-700 bg-zinc-900 px-3 text-xs text-zinc-200 hover:bg-zinc-800"
-        onClick={() => setOpen((v) => !v)}
-      >
-        <BarChart3 className="h-3.5 w-3.5 text-emerald-400" />
-        {active.label}
-        <ChevronDown className={cn("h-3.5 w-3.5 text-zinc-500 transition-transform", open && "rotate-180")} />
-      </Button>
-      {open && (
-        <div className="absolute right-0 top-9 z-30 w-64 overflow-hidden rounded-lg border border-zinc-700 bg-zinc-900 shadow-xl">
-          {VIEW_ITEMS.map((v) => (
-            <button
-              key={v.id}
-              onClick={() => { onChange(v.id); setOpen(false); }}
-              className={cn(
-                "flex w-full items-start gap-2 px-3 py-2.5 text-left transition-colors hover:bg-zinc-800/70",
-                v.id === value && "bg-zinc-800/50"
-              )}
-            >
-              <Check className={cn("mt-0.5 h-3.5 w-3.5 shrink-0", v.id === value ? "text-emerald-400" : "text-transparent")} />
-              <span>
-                <span className="block text-xs font-medium text-zinc-100">{v.label}</span>
-                <span className="block text-[10px] text-zinc-500">{v.hint}</span>
-              </span>
-            </button>
-          ))}
-        </div>
-      )}
+    <div role="tablist" aria-label="Market views" className="flex flex-wrap items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900/70 p-1">
+      {VIEW_ITEMS.map((v) => {
+        const active = v.id === value;
+        return (
+          <button
+            key={v.id}
+            role="tab"
+            aria-selected={active}
+            title={v.hint}
+            onClick={() => onChange(v.id)}
+            className={cn(
+              "rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors",
+              active ? "bg-zinc-800 text-zinc-100 shadow-sm" : "text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200",
+            )}
+          >
+            {active && <BarChart3 className="mr-1.5 inline h-3.5 w-3.5 align-[-2px] text-emerald-400" />}
+            {v.label}
+          </button>
+        );
+      })}
     </div>
   );
 }
 
-export function MarketTab({ onSelectStock, isPro = false, onUpgrade, onOpenWatchlist }: { onSelectStock: (s: string) => void; isPro?: boolean; onUpgrade?: () => void; onOpenWatchlist?: () => void }) {
+export function MarketTab({ onSelectStock, isPro = false, onUpgrade, onOpenWatchlist, onScanSector }: { onSelectStock: (s: string) => void; isPro?: boolean; onUpgrade?: () => void; onOpenWatchlist?: () => void; onScanSector?: (sector: string) => void }) {
   const [subView, setSubView] = useState<SubView>("breadth");
   // Liquid mode filters circuit-pennies out of Gainers/Losers (server-side).
   const [moversLiquid, setMoversLiquid] = useState(true);
@@ -146,13 +119,13 @@ export function MarketTab({ onSelectStock, isPro = false, onUpgrade, onOpenWatch
 
   return (
     <div className="space-y-4">
-      {/* View header + dropdown */}
-      <div className="flex items-center justify-between gap-3">
+      {/* View header + visible tabs */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="text-[10px] font-semibold uppercase tracking-widest text-emerald-400">Market · the lay of the land</div>
           <h2 className="text-lg font-bold tracking-tight text-zinc-100">{activeLabel}</h2>
         </div>
-        <MarketViewDropdown value={subView} onChange={setSubView} />
+        <MarketViewTabs value={subView} onChange={setSubView} />
       </div>
 
       {/* Indices always visible */}
@@ -167,7 +140,12 @@ export function MarketTab({ onSelectStock, isPro = false, onUpgrade, onOpenWatch
                     <div className="mt-0.5 font-mono text-base font-semibold text-zinc-100">
                       {idx.price.toLocaleString("en-IN", { maximumFractionDigits: idx.price > 10000 ? 0 : 2 })}
                     </div>
-                    <div className={cn("font-mono text-xs", changeColor(idx.changePct))}>{fmtPct(idx.changePct)}</div>
+                    <div
+                      className={cn("font-mono text-xs", idx.symbol.includes("VIX") ? changeColor(-(idx.changePct ?? 0)) : changeColor(idx.changePct))}
+                      title={idx.symbol.includes("VIX") ? "India VIX — a FALLING VIX signals a calmer market (shown green); rising VIX = fear (red)" : undefined}
+                    >
+                      {fmtPct(idx.changePct)}
+                    </div>
                   </>
                 ) : (
                   <div className="mt-1 flex items-center gap-1.5 text-xs text-zinc-500" title="Index feed reconnecting — syncs every trading day at 4:00 pm IST">
@@ -192,7 +170,12 @@ export function MarketTab({ onSelectStock, isPro = false, onUpgrade, onOpenWatch
         <BreadthView data={data} breadth={breadth} moversLiquid={moversLiquid} onMoversToggle={setMoversLiquid} onSelectStock={onSelectStock} />
       ))}
 
-      {subView === "momentum" && <SectorMomentumView />}
+      {subView === "momentum" && (
+        <SectorMomentumView
+          onOpenRotation={() => setSubView("rotation")}
+          onScanSector={onScanSector}
+        />
+      )}
 
       {(subView === "rotation" || subView === "strength") && (sectorError ? (
         <div className="rounded-lg border border-zinc-800 bg-zinc-900/60 py-10 text-center text-xs text-zinc-500">

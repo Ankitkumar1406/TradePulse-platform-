@@ -44,6 +44,8 @@ const TABS: { id: TabId; label: string; icon: React.ComponentType<{ className?: 
 export default function Home() {
   const { data: session, status } = useSession();
   const [tab, setTab] = useState<TabId>("market");
+  // Sector prefill for the screener — set by "Run scan on this sector" actions.
+  const [scanSector, setScanSector] = useState<string | undefined>(undefined);
   const [openStock, setOpenStock] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     return new URLSearchParams(window.location.search).get("stock")?.toUpperCase() ?? null;
@@ -144,8 +146,8 @@ export default function Home() {
 
       {/* content */}
       <main className="mx-auto max-w-7xl px-3 py-4 sm:px-4 sm:py-6">
-        {tab === "market" && <MarketTab onSelectStock={onSelectStock} isPro={isPro} onUpgrade={() => setUpgradeOpen(true)} onOpenWatchlist={() => setTab("watchlist")} />}
-        {tab === "screener" && <ScreenerTab onSelectStock={onSelectStock} isPro={isPro} onUpgrade={() => setUpgradeOpen(true)} />}
+        {tab === "market" && <MarketTab onSelectStock={onSelectStock} isPro={isPro} onUpgrade={() => setUpgradeOpen(true)} onOpenWatchlist={() => setTab("watchlist")} onScanSector={(s) => { setScanSector(s); setTab("screener"); }} />}
+        {tab === "screener" && <ScreenerTab onSelectStock={onSelectStock} isPro={isPro} onUpgrade={() => setUpgradeOpen(true)} initialSector={scanSector} />}
         {tab === "scanners" && <ScannersTab isPro={isPro} onSelectStock={onSelectStock} onUpgrade={() => setUpgradeOpen(true)} />}
         {tab === "watchlist" && <WatchlistTab onSelectStock={onSelectStock} />}
         {tab === "alerts" && <AlertsTab onSelectStock={onSelectStock} />}
