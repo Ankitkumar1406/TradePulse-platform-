@@ -6,7 +6,9 @@ import {
   ProRowWire,
   isV2Payload,
   proSymbolList,
+  proComputedFor,
 } from "@/lib/pro-sql";
+import { FNO_UNIVERSE, NIFTY50_UNIVERSE, universeToDbSymbols } from "@/lib/fno-universe";
 
 export const dynamic = "force-dynamic";
 
@@ -126,10 +128,13 @@ export async function GET(req: Request) {
   if (sector && sector !== "all") baseWhere.AND.push({ sector });
 
   // Condition builder — up to 50 rows. Legacy arrays keep old semantics;
-  // {v:2, rows} from the rebuilt builder uses AND-of-OR-groups semantics.
+  // {v:2, rows, base?} from the rebuilt builder uses AND-of-OR-groups semantics.
+  // `base` rows are Universe-bar baseline filters — they AND-combine and never
+  // consume condition slots. `universe` narrows membership (Nifty 50/500, F&O).
   let condCount = 0;
   const condRaw = url.searchParams.get("cond");
   let condRows: ProRowWire[] = [];
+  let baseRows: ProRowWire[] = [];
   let hasPro = false;
   let semantics: CondSemantics = "legacy";
   if (condRaw) {
@@ -138,17 +143,43 @@ export async function GET(req: Request) {
       if (Array.isArray(parsed)) {
         condRows = parsed.slice(0, MAX_COND_ROWS) as ProRowWire[];
         hasPro = condRows.some(
-          (r) => r != null && typeof r === "object" && (r as { kind?: unknown }).kind === "expr"
+          (r) => r != null && typeof r === "object" && ((r as { kind?: unknown }).kind === "expr" || (r as { kind?: unknown }).kind === "pattern")
         );
       } else if (isV2Payload(parsed)) {
         condRows = (parsed.rows as ProRowWire[]).slice(0, MAX_COND_ROWS);
+        const rawBase = (parsed as { base?: unknown }).base;
+        baseRows = Array.isArray(rawBase) ? (rawBase as ProRowWire[]).slice(0, 10) : [];
         semantics = "v2";
-        hasPro = condRows.length > 0;
+        hasPro = condRows.length > 0 || baseRows.length > 0;
       }
     } catch {
       return NextResponse.json({ error: "Invalid cond JSON" }, { status: 400 });
     }
   }
+
+  // Universe bar — membership narrowing + baseline filters. Any of these
+  // active routes the screen through the pro path (one SQL for everything).
+  const universe = url.searchParams.get("universe") ?? "all";
+  const minPrice = Number(url.searchParams.get("minPrice") ?? "") || null;
+  const minMcapCr = Number(url.searchParams.get("minMcapCr") ?? "") || null;
+  const minTurnoverCr = Number(url.searchParams.get("minTurnoverCr") ?? "") || null;
+  const extras: { sql: string; params: unknown[]; cheap?: boolean }[] = [];
+  let restrictCandidates: string[] | null = null;
+  if (universe === "n50") {
+    restrictCandidates = universeToDbSymbols(NIFTY50_UNIVERSE);
+  } else if (universe === "fno") {
+    restrictCandidates = universeToDbSymbols(FNO_UNIVERSE);
+  } else if (universe === "n500") {
+    // Self-maintaining Nifty 500 approximation: the 500 largest by market cap.
+    extras.push({
+      sql: `st."marketCap" >= (SELECT st2."marketCap" FROM "Stock" st2 WHERE st2."marketCap" IS NOT NULL ORDER BY st2."marketCap" DESC OFFSET 499 LIMIT 1)`,
+      params: [],
+    });
+  }
+  if (minPrice != null && minPrice > 0) extras.push({ sql: `st."price" >= ?`, params: [minPrice], cheap: true });
+  if (minMcapCr != null && minMcapCr > 0) extras.push({ sql: `st."marketCap" >= ?`, params: [minMcapCr * 1e7], cheap: true });
+  if (minTurnoverCr != null && minTurnoverCr > 0) extras.push({ sql: `st."price" * st."volume" >= ?`, params: [minTurnoverCr * 1e7], cheap: true });
+  if (extras.length > 0 || restrictCandidates != null) hasPro = true;
 
   try {
     let total: number;
@@ -156,9 +187,10 @@ export async function GET(req: Request) {
 
     if (hasPro) {
       // ---- pro path: compile everything into one SQL query (cached briefly)
-      const symbols = await proSymbolList(db, condRows, { sector, sort, dir }, semantics);
+      const proOpts = { sector, sort, dir: dir as "asc" | "desc", extra: extras, restrictCandidates };
+      const symbols = await proSymbolList(db, condRows, proOpts, semantics, baseRows);
       total = symbols.length;
-      condCount = condRows.length;
+      condCount = condRows.length + baseRows.length;
       const pageSymbols = symbols.slice((page - 1) * perPage, page * perPage);
       const rows = pageSymbols.length
         ? await db.stock.findMany({ where: { symbol: { in: pageSymbols } }, select: STOCK_SELECT })
@@ -167,6 +199,27 @@ export async function GET(req: Request) {
       stocks = pageSymbols
         .map((s) => bySymbol.get(s))
         .filter((r): r is (typeof rows)[number] => Boolean(r)) as unknown as Record<string, unknown>[];
+
+      // "Show computed value" — evaluate the applied conditions' expressions
+      // for the visible page so users can verify the math. Capped at 6 columns.
+      const colsRaw = url.searchParams.get("cols");
+      if (colsRaw && pageSymbols.length > 0) {
+        try {
+          const parsedCols: unknown = JSON.parse(colsRaw);
+          const colExprs = (Array.isArray(parsedCols) ? parsedCols : [])
+            .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+            .slice(0, 6);
+          if (colExprs.length > 0) {
+            const computed = await proComputedFor(db, condRows, proOpts, pageSymbols, colExprs, baseRows);
+            for (const s of stocks) {
+              (s as { computed?: (number | null)[] }).computed = computed.get(s.symbol as string) ?? undefined;
+            }
+          }
+        } catch {
+          // computed values are a nicety — a bad column expression must not
+          // fail the screen itself
+        }
+      }
     } else {
       // ---- fast path: snapshot columns only, compiled to a Prisma where
       const where = { ...baseWhere, AND: [...baseWhere.AND] };

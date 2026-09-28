@@ -17,6 +17,7 @@ import {
   wirePayload,
   type BuilderInitial,
   type BuilderStateInfo,
+  type UniverseState,
   type V2Row,
 } from "@/components/condition-builder";
 import {
@@ -316,6 +317,7 @@ export function ScreenerTab({
         ids?: string[];
         min?: number;
         q?: unknown; sector?: unknown; sort?: unknown; dir?: unknown;
+        uni?: Partial<UniverseState>;
       };
       if (s.kind === "conditions" && Array.isArray(def.rows)) {
         // v2 definitions carry UI-shaped rows (terms with tf/offset/params);
@@ -330,9 +332,17 @@ export function ScreenerTab({
           rows = conv.rows;
           orNote = conv.orUsed;
         }
+        const uni: UniverseState | undefined = def.uni
+          ? {
+              universe: def.uni.universe === "n50" || def.uni.universe === "n500" || def.uni.universe === "fno" ? def.uni.universe : "all",
+              minPrice: typeof def.uni.minPrice === "string" ? def.uni.minPrice : "",
+              minMcapCr: typeof def.uni.minMcapCr === "string" ? def.uni.minMcapCr : "",
+              minTurnoverCr: typeof def.uni.minTurnoverCr === "string" ? def.uni.minTurnoverCr : "",
+            }
+          : undefined;
         setBuilderState({ name: s.name, dirty: false, wireJson: wirePayload(rows) });
         loadNonce.current += 1;
-        setBuilderLoad({ rows, name: s.name, screenId: s.id, baselineWire: wirePayload(rows), legacyOrNote: orNote, nonce: loadNonce.current });
+        setBuilderLoad({ rows, name: s.name, screenId: s.id, baselineWire: wirePayload(rows), legacyOrNote: orNote, nonce: loadNonce.current, uni });
         setMode("builder");
       } else if (s.kind === "multi" && Array.isArray(def.ids)) {
         setSel(def.ids.slice(0, 8));

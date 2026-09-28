@@ -18,6 +18,7 @@ export interface StockRow {
   rsi14: number | null; mom1M: number | null; mom3M: number | null; mom6M: number | null;
   peTTM: number | null; fromHighPct: number | null;
   volAvg20: number | null; relVol: number | null; // volume vs prior-20-session average (API-computed)
+  computed?: (number | null)[]; // evaluated condition expressions ("show values")
 }
 
 export interface StocksResponse {
@@ -68,12 +69,23 @@ export function rsiTone(rsi: number | null): string {
   return "text-zinc-300";
 }
 
+/** Compact value formatter for the computed-value cells. */
+function fmtVal(v: number | null): string {
+  if (v == null) return "—";
+  const a = Math.abs(v);
+  if (a >= 1e7) return `${(v / 1e7).toFixed(2)}Cr`;
+  if (a >= 1e5) return `${(v / 1e5).toFixed(2)}L`;
+  if (a >= 1000) return v.toLocaleString("en-IN", { maximumFractionDigits: 1 });
+  return Number(v.toFixed(2)).toString();
+}
+
 export function ResultsTable({
-  rows, isLoading, onSelectStock,
+  rows, isLoading, onSelectStock, showValues,
 }: {
   rows?: StockRow[];
   isLoading: boolean;
   onSelectStock: (s: string) => void;
+  showValues?: boolean;
 }) {
   return (
     <Card className="border-zinc-800 bg-zinc-900/60">
@@ -89,7 +101,7 @@ export function ResultsTable({
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[860px] text-sm">
+            <table className={cn("w-full text-sm", showValues ? "min-w-[960px]" : "min-w-[860px] ")}>
               <thead>
                 <tr className="border-b border-zinc-800/70 text-left text-[10px] uppercase tracking-wider text-zinc-500">
                   <th className="w-9 px-2 py-2.5 text-center font-medium">
@@ -107,6 +119,11 @@ export function ResultsTable({
                   <th className="px-3 py-2.5 text-right font-medium">P/E</th>
                   <th className="px-3 py-2.5 text-right font-medium">From high</th>
                   <th className="px-4 py-2.5 text-right font-medium">Mkt cap</th>
+                  {showValues && (
+                    <th className="px-3 py-2.5 text-right font-medium" title="Each condition's evaluated left / right values for this stock — verify the math">
+                      Values
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -143,6 +160,20 @@ export function ResultsTable({
                     <td className="px-3 py-2.5 text-right font-mono text-xs text-zinc-400">{fmtNum(r.peTTM, 1)}</td>
                     <td className="px-3 py-2.5 text-right font-mono text-xs text-zinc-400">{fmtNum(r.fromHighPct, 1)}%</td>
                     <td className="px-4 py-2.5 text-right font-mono text-xs text-zinc-400">{fmtMcap(r.marketCap)}</td>
+                    {showValues && (
+                      <td className="max-w-40 px-3 py-2.5 text-right font-mono text-[10px] leading-4 text-zinc-400" title="Condition values: left / right per condition">
+                        {r.computed && r.computed.length > 0
+                          ? (() => {
+                              const pairs: string[] = [];
+                              for (let i = 0; i + 1 < r.computed.length; i += 2) {
+                                pairs.push(`${fmtVal(r.computed[i])} / ${fmtVal(r.computed[i + 1])}`);
+                              }
+                              if (r.computed.length % 2 === 1) pairs.push(fmtVal(r.computed[r.computed.length - 1]));
+                              return pairs.join(" · ");
+                            })()
+                          : "—"}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

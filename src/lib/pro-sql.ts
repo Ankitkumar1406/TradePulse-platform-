@@ -77,7 +77,18 @@ export interface ExprRowWire {
   logic?: unknown;
 }
 
-export type ProRowWire = FieldRowWire | ExprRowWire;
+/** Pattern row — one wire row that compiles to a cross-bar boolean the
+ *  expression grammar can't reach (streaks). Replaces the repeated
+ *  "weekly high >= N weeks ago high" rows users had to stack by hand. */
+export interface PatternRowWire {
+  kind?: unknown; // "pattern"
+  pattern?: unknown; // "higherHighs" | "lowerLows"
+  tf?: unknown; // "d" | "w"
+  n?: unknown; // streak length 1–20
+  logic?: unknown;
+}
+
+export type ProRowWire = FieldRowWire | ExprRowWire | PatternRowWire;
 
 export const EXPR_CMPS = [
   "gt", "gte", "lt", "lte", "eq", "between", "crossAbove", "crossBelow", "withinPct",
@@ -170,7 +181,12 @@ function nodeSql(ctx: FeatCtx, n: ExprNode): string {
       return /[.eE]/.test(s) ? s : `${s}.0`;
     }
     case "bin":
-      return `(${nodeSql(ctx, n.a)} ${n.op} ${nodeSql(ctx, n.b)})`;
+      // Division by zero → NULL (no match), never a query failure: a stock
+      // with a 0-volume base (SME pairs, suspended bars) would otherwise 500
+      // the whole screen. NULL propagates into the comparison and excludes.
+      return n.op === "/"
+        ? `(${nodeSql(ctx, n.a)}) / NULLIF(${nodeSql(ctx, n.b)}, 0.0)`
+        : `(${nodeSql(ctx, n.a)} ${n.op} ${nodeSql(ctx, n.b)})`;
     case "neg":
       return `(-${nodeSql(ctx, n.a)})`;
     case "abs":
@@ -198,6 +214,33 @@ function nodeSql(ctx: FeatCtx, n: ExprNode): string {
     case "scalar":
       return `st."${n.f}"`;
   }
+}
+
+// ------------------------------------------------------------ pattern rows
+
+const PATTERN_MAX_N = 20;
+
+/** A pattern row → boolean SQL over the same CTE features. NULL lags (stocks
+ *  with too little history) quietly fail the comparison — exclusion, not error. */
+function compilePatternRow(ctx: FeatCtx, raw: PatternRowWire, rowIdx: number): CompiledRow | null {
+  const pat = typeof raw.pattern === "string" ? raw.pattern : "";
+  if (pat !== "higherHighs" && pat !== "lowerLows") return null;
+  const tf = raw.tf === "w" ? "w" : "d";
+  const n = Number(raw.n);
+  if (!Number.isInteger(n) || n < 1 || n > PATTERN_MAX_N) {
+    throw new ProCompileError(`Row ${rowIdx}: pattern streak length must be 1–${PATTERN_MAX_N}`);
+  }
+  // higherHighs: current high ≥ each of the previous n highs (lowerLows: low ≤ …)
+  const f = pat === "higherHighs" ? "high" : "low";
+  const op = pat === "higherHighs" ? ">=" : "<=";
+  const p = tf === "d" ? "d" : "w";
+  if (tf === "d") ctx.needsD = true; else ctx.needsW = true;
+  const parts: string[] = [];
+  for (let k = 1; k <= n; k++) {
+    const lag = featFor(ctx, tf, f, "lag", 0, k);
+    parts.push(`(${p}."${f}" ${op} ${p}."${lag.alias}")`);
+  }
+  return { sql: `(${parts.join(" AND ")})`, params: [] };
 }
 
 // ------------------------------------------------------------ row compilation
@@ -300,7 +343,7 @@ function rowSql(
     return `(${l}) ${main} (${r}) AND (${lPrev}) ${prev} (${rPrev})`;
   }
   if (cmp === "withinPct") {
-    return `(ABS((${l}) - (${r})) / ABS((${r}))) * 100.0 <= ${pct}`;
+    return `(ABS((${l}) - (${r})) / NULLIF(ABS((${r})), 0.0)) * 100.0 <= ${pct}`;
   }
   if (cmp === "between" && r2n) {
     const r2 = nodeSql(ctx, r2n);
@@ -319,6 +362,15 @@ export interface ProQueryOpts {
   sector: string;
   sort: string;
   dir: "asc" | "desc";
+  /** Universe-bar extras — always AND-combined, never consume row slots.
+   *  `cheap` fragments reference only st.* columns and join the candidate
+   *  pre-filter; others (symbol lists, subqueries) go to the main WHERE. */
+  extra?: { sql: string; params: unknown[]; cheap?: boolean }[];
+  /** Expression sources to surface as computed-value columns ("c0", "c1"…)
+   *  alongside the symbol — the results-table "show values" feature. */
+  selectColExprs?: string[];
+  /** Fixed membership list (Nifty 50 / F&O) — restricts CTE scans directly. */
+  restrictCandidates?: string[] | null;
 }
 
 export interface Cutoffs {
@@ -359,14 +411,57 @@ interface Group {
 function groupRows(
   rows: ProRowWire[],
   ctx: FeatCtx,
-  semantics: CondSemantics
+  semantics: CondSemantics,
+  base: ProRowWire[] = []
 ): { groups: Group[]; condCount: number } {
   const splitOn: "and" | "or" = semantics === "v2" ? "and" : "or";
   const groups: Group[] = [];
   let condCount = 0;
+
+  // Universe-bar base rows — each becomes its own top-level group (v2 groups
+  // AND-combine), so baseline filters AND into the screen without consuming
+  // any of the user's condition slots. Only ever sent by the v2 builder.
+  base.forEach((raw, idx) => {
+    if (!raw || typeof raw !== "object") return;
+    const rowIdx = idx + 1;
+    const isExpr = (raw as ExprRowWire).kind === "expr";
+    if (isExpr) {
+      const r = raw as ExprRowWire;
+      const parseSide = (x: unknown, what: string) => {
+        if (typeof x !== "string" || !x.trim()) {
+          throw new ProCompileError(`Universe filter ${rowIdx}: the ${what} expression is empty`);
+        }
+        const parsed = parseProExpr(x);
+        if (!parsed.ok) throw new ProCompileError(`Universe filter ${rowIdx}: ${parsed.error}`);
+        return parsed.node;
+      };
+      const ln = parseSide(r.l, "left");
+      const rn = parseSide(r.r, "right");
+      const cmp = typeof r.cmp === "string" && (EXPR_CMPS as readonly string[]).includes(r.cmp)
+        ? (r.cmp as ExprCmp)
+        : null;
+      if (!cmp) throw new ProCompileError(`Universe filter ${rowIdx}: unknown operator`);
+      condCount++;
+      groups.push({ all: [{ sql: rowSql(ctx, cmp, 0, ln, rn, null, null), params: [] }], cheap: [] });
+      return;
+    }
+    const compiled = compileFieldRow(raw as FieldRowWire);
+    if (!compiled) return;
+    condCount++;
+    groups.push({ all: [compiled], cheap: [{ sql: compiled.sql, params: compiled.params }] });
+  });
+
   rows.forEach((raw, idx) => {
     if (!raw || typeof raw !== "object") return;
     const rowIdx = idx + 1;
+    // Pattern rows — one wire row compiles to a cross-bar streak boolean.
+    if ((raw as PatternRowWire).kind === "pattern") {
+      const compiled = compilePatternRow(ctx, raw as PatternRowWire, rowIdx);
+      if (!compiled) return;
+      condCount++;
+      pushCompiled(groups, compiled, null, (raw as PatternRowWire).logic, splitOn);
+      return;
+    }
     const isExpr = (raw as ExprRowWire).kind === "expr";
     if (isExpr) {
       const r = raw as ExprRowWire;
@@ -411,7 +506,7 @@ function groupRows(
           const cr2 = r2n ? nodeSql(cheapCtx, r2n) : null;
           const cheapSql =
             cmp === "withinPct" && pct != null
-              ? `(ABS((${cl}) - (${cr})) / ABS((${cr}))) * 100.0 <= ${pct}`
+              ? `(ABS((${cl}) - (${cr})) / NULLIF(ABS((${cr})), 0.0)) * 100.0 <= ${pct}`
               : cmp === "between" && r2n && cr2 != null
                 ? `(${cl}) BETWEEN LEAST((${cr}), (${cr2})) AND GREATEST((${cr}), (${cr2}))`
                 : `(${cl}) ${DIRECT_CMP_SQL[cmp]} (${cr})`;
@@ -453,10 +548,20 @@ export function compileProQuery(
   opts: ProQueryOpts,
   cutoffs: Cutoffs,
   restrictSymbols: string[] | null,
-  semantics: CondSemantics = "legacy"
+  semantics: CondSemantics = "legacy",
+  base: ProRowWire[] = []
 ): CompiledProQuery {
   const ctx: FeatCtx = { d: new Map(), w: new Map(), needsD: false, needsW: false, aliasSeq: 0 };
-  const { groups, condCount } = groupRows(rows, ctx, semantics);
+  const { groups, condCount } = groupRows(rows, ctx, semantics, base);
+
+  // Computed-value columns — compiled through the SAME ctx so any window a
+  // column references joins the CTE collection.
+  const selectCols: string[] = [];
+  for (const src of opts.selectColExprs ?? []) {
+    const parsed = parseProExpr(src);
+    if (!parsed.ok) throw new ProCompileError(`Computed column: ${parsed.error}`);
+    selectCols.push(`(${nodeSql(ctx, parsed.node)})`);
+  }
 
   // WHERE assembly
   const params: unknown[] = [];
@@ -464,6 +569,18 @@ export function compileProQuery(
   if (opts.sector && opts.sector !== "all") {
     conds.push(`st."sector" = ?`);
     params.push(opts.sector);
+  }
+  // Universe extras — AND-combined, in SQL text order right after sector.
+  for (const ex of opts.extra ?? []) {
+    conds.push(ex.sql);
+    params.push(...ex.params);
+  }
+  // Symbol restriction (fixed universe or candidate pre-filter) must hold in
+  // the main WHERE too — CTE-only restriction silently leaks when no CTE is
+  // needed (snapshot-only screens would scan the whole market).
+  if (restrictSymbols && restrictSymbols.length > 0) {
+    conds.push(`st."symbol" IN (${restrictSymbols.map(() => "?").join(",")})`);
+    params.push(...restrictSymbols);
   }
   if (groups.length > 0) {
     // Within a group: legacy rows AND together; v2 rows are the OR-box contents.
@@ -556,6 +673,7 @@ export function compileProQuery(
   const sql = [
     withClause,
     `SELECT st."symbol" AS symbol`,
+    ...selectCols.map((c, i) => `  , ${c} AS "c${i}"`),
     `FROM "Stock" st`,
     joins,
     `WHERE ${whereAll}`,
@@ -622,9 +740,10 @@ export async function proSymbolList(
   client: QueryClient,
   rows: ProRowWire[],
   opts: ProQueryOpts,
-  semantics: CondSemantics = "legacy"
+  semantics: CondSemantics = "legacy",
+  base: ProRowWire[] = []
 ): Promise<string[]> {
-  const key = JSON.stringify([rows, opts, semantics]);
+  const key = JSON.stringify([rows, base, opts, semantics]);
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
     cache.delete(key);
@@ -634,18 +753,23 @@ export async function proSymbolList(
 
   // Probe compile: validates every row (throws ProCompileError) and learns
   // which CTEs the expressions need + how deep the lookbacks run.
-  const probe = compileProQuery(rows, opts, { d: null, w: null }, null, semantics);
+  const probe = compileProQuery(rows, opts, { d: null, w: null }, null, semantics, base);
 
   // Candidate pre-filter from the snapshot-only rows. The active sector filter
   // also narrows candidates — include it here so sector-scoped pro screens
   // get the indexed scan too.
   let restrict: string[] | null = null;
+  // A fixed universe (Nifty 50 / F&O) restricts directly — no query needed.
+  if (opts.restrictCandidates && opts.restrictCandidates.length > 0 && opts.restrictCandidates.length <= RESTRICT_MAX) {
+    restrict = opts.restrictCandidates;
+  }
   const { groups } = groupRows(
     rows,
     { d: new Map(), w: new Map(), needsD: false, needsW: false, aliasSeq: 0 },
-    semantics
+    semantics,
+    base
   );
-  if (groups.length > 0) {
+  if (restrict === null && groups.length > 0) {
     const sectorCond: CompiledRow | null =
       opts.sector && opts.sector !== "all"
         ? { sql: `st."sector" = ?`, params: [opts.sector] }
@@ -658,11 +782,16 @@ export async function proSymbolList(
       // Groups AND-combine: every group is required, so intersecting the
       // group constraints that ARE available stays a safe superset — groups
       // without snapshot conditions simply don't constrain the pre-filter.
-      if (usable.length > 0) {
-        const andSql = `SELECT st."symbol" AS symbol FROM "Stock" st WHERE ${usable
+      // Universe-bar cheap extras (min price / mcap) are required too.
+      const cheapExtras = (opts.extra ?? [])
+        .filter((e) => e.cheap)
+        .map((e) => [{ sql: e.sql, params: e.params }] as CompiledRow[]);
+      const usableAll = [...usable, ...cheapExtras];
+      if (usableAll.length > 0) {
+        const andSql = `SELECT st."symbol" AS symbol FROM "Stock" st WHERE ${usableAll
           .map((c) => (c.length === 1 ? c[0].sql : `(${c.map((x) => x.sql).join(" OR ")})`))
           .join(" AND ")}`;
-        const andParams = usable.flatMap((c) => c.flatMap((x) => x.params));
+        const andParams = usableAll.flatMap((c) => c.flatMap((x) => x.params));
         const cand = (await client.$queryRawUnsafe(toPgSql(andSql), ...andParams)) as { symbol: unknown }[];
         const symbols = cand.map((r) => String(r.symbol));
         if (symbols.length === 0) return [];
@@ -686,7 +815,7 @@ export async function proSymbolList(
   if (probe.needsD && probe.sessionsD > 0) cutoffs.d = await cutoffFor(client, probe.sessionsD);
   if (probe.needsW && probe.sessionsW > 0) cutoffs.w = await cutoffFor(client, probe.sessionsW);
 
-  const compiled = compileProQuery(rows, opts, cutoffs, restrict, semantics);
+  const compiled = compileProQuery(rows, opts, cutoffs, restrict, semantics, base);
   const out = await client.$queryRawUnsafe(toPgSql(compiled.sql), ...compiled.params);
   const symbols = (out as { symbol: unknown }[]).map((r) => String(r.symbol));
 
@@ -697,4 +826,62 @@ export async function proSymbolList(
     if (oldest !== undefined) cache.delete(oldest);
   }
   return symbols;
+}
+
+// ------------------------------------------------------------ computed values
+
+export interface ComputedVals {
+  symbol: string;
+  vals: (number | null)[]; // one entry per requested column
+}
+
+/**
+ * Computed-value columns for one page of an already-matched screen — the
+ * "show computed value" results column. Compiles the SAME rows (so the CTE
+ * feature set matches) but selects the requested expressions, restricted to
+ * the page's symbols. Not cached: it runs for a handful of symbols only.
+ */
+export async function proComputedFor(
+  client: QueryClient,
+  rows: ProRowWire[],
+  opts: ProQueryOpts,
+  symbols: string[],
+  colExprs: string[],
+  base: ProRowWire[] = []
+): Promise<Map<string, (number | null)[]>> {
+  const out = new Map<string, (number | null)[]>();
+  if (colExprs.length === 0 || symbols.length === 0) return out;
+  if (symbols.length > RESTRICT_MAX) return out;
+
+  const probe = compileProQuery(
+    rows,
+    { ...opts, selectColExprs: colExprs },
+    { d: null, w: null },
+    symbols,
+    "v2",
+    base
+  );
+  const cutoffs: Cutoffs = { d: null, w: null };
+  if (probe.needsD && probe.sessionsD > 0) cutoffs.d = await cutoffFor(client, probe.sessionsD);
+  if (probe.needsW && probe.sessionsW > 0) cutoffs.w = await cutoffFor(client, probe.sessionsW);
+
+  const compiled = compileProQuery(
+    rows,
+    { ...opts, selectColExprs: colExprs },
+    cutoffs,
+    symbols,
+    "v2",
+    base
+  );
+  const res = (await client.$queryRawUnsafe(toPgSql(compiled.sql), ...compiled.params)) as Record<string, unknown>[];
+  for (const r of res) {
+    const sym = String(r.symbol);
+    const vals: (number | null)[] = [];
+    for (let i = 0; i < colExprs.length; i++) {
+      const v = r[`c${i}`];
+      vals.push(v == null ? null : Number(v));
+    }
+    out.set(sym, vals);
+  }
+  return out;
 }

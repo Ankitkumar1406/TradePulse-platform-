@@ -92,7 +92,6 @@ export type ExprNode =
   | { k: "ser"; s: TF; f: SeriesField; shift: number }
   | { k: "win"; fn: "sma" | "min" | "max"; ser: SeriesAtom; n: number }
   | { k: "scalar"; f: string };
-
 export type ParseOk = { ok: true; node: ExprNode; text: string };
 export type ParseFail = { ok: false; error: string };
 export type ParseResult = ParseOk | ParseFail;
@@ -104,6 +103,36 @@ export const EXPR_MAX_NODES = 80;
 const MAX_DEPTH = 16;
 const WIN_MAX_N = 500;
 const SHIFT_MAX = 600;
+
+// ---------------------------------------------------------------- unit shortcuts
+
+/**
+ * Indian-unit number shortcuts, Chartink-style: `3cr` → 30,000,000,
+ * `50L` → 5,000,000, `1.5k` → 1500. Applied as a text preprocess before
+ * tokenizing so both the browser preview and the server compile share the
+ * exact same expansion. Requires the suffix glued to the number (no space)
+ * so an expression like `2 weeks ago close` is never touched.
+ */
+const UNIT_SUFFIX_RE = /(\d+(?:\.\d+)?)(cr|crore|l|lac|lakh|k)(?=\b|[^a-z0-9_])/gi;
+const UNIT_SUFFIX_MULT: Record<string, number> = {
+  cr: 1e7, crore: 1e7, l: 1e5, lac: 1e5, lakh: 1e5, k: 1e3,
+};
+
+export function expandUnitSuffixes(src: string): string {
+  return src.replace(UNIT_SUFFIX_RE, (raw, num: string, suf: string) => {
+    const m = UNIT_SUFFIX_MULT[suf.toLowerCase()];
+    if (!m) return raw;
+    const v = Number(num) * m;
+    if (!Number.isFinite(v)) return raw;
+    return String(v);
+  });
+}
+
+/** Accept a user-typed number (optionally with a unit suffix) → numeric value. */
+export function parseNumWithUnits(raw: string): number | null {
+  const v = Number(expandUnitSuffixes(raw.trim()));
+  return Number.isFinite(v) ? v : null;
+}
 
 // ---------------------------------------------------------------- tokenizer
 
@@ -127,6 +156,15 @@ function tokenize(src: string, basePos: number, errs: string[]): Tok[] {
       while (i < src.length && /[0-9]/.test(src[i])) i++;
       if (src[i] === "." && /[0-9]/.test(src[i + 1] ?? "")) {
         i++;
+        while (i < src.length && /[0-9]/.test(src[i])) i++;
+      }
+      // scientific notation — 1e7, 2.5e3 (unit shortcuts make these rare, but
+      // hand-typed turnover/liquidity formulas use them)
+      if (/[eE]/.test(src[i] ?? "") && /[0-9]/.test(src[i + 1] ?? "")) {
+        i += 2;
+        while (i < src.length && /[0-9]/.test(src[i])) i++;
+      } else if (/[eE]/.test(src[i] ?? "") && /[+-]/.test(src[i + 1] ?? "") && /[0-9]/.test(src[i + 2] ?? "")) {
+        i += 3;
         while (i < src.length && /[0-9]/.test(src[i])) i++;
       }
       toks.push({ t: "num", v: src.slice(start, i), pos: basePos + start });
@@ -215,7 +253,9 @@ class Parser {
       this.fail(`Expression too long (max ${EXPR_MAX_LEN} characters)`);
     }
     // Chartink-friendly alias: "market cap" → the marketCap snapshot field
-    const normalized = src.replace(/\bmarket\s+cap\b/gi, "marketCap");
+    let normalized = src.replace(/\bmarket\s+cap\b/gi, "marketCap");
+    // Indian unit shortcuts: 3cr → 30000000, 50L → 5000000, 1.5k → 1500
+    normalized = expandUnitSuffixes(normalized);
     this.toks = tokenize(normalized, 0, this.errs);
     if (this.errs.length > 0) this.fail(this.errs[0]);
     if (this.toks.length === 0) this.fail("Expression is empty");
@@ -363,6 +403,32 @@ class Parser {
         this.budget();
         return { k: "abs", a: inner };
       }
+      // Chartink-style aliases — highest/lowest take (series, N) in that order.
+      case "highest":
+      case "lowest":
+        return this.parseWindow(kw === "highest" ? "max" : "min", ctx, true);
+      // pct_change(series, N) — % move vs N bars back, desugared at parse
+      // time into ((ser - ser@N) / abs(ser@N)) * 100 so the compiler needs
+      // no new node kind. Divide-by-zero is neutralised in pro-sql (NULLIF).
+      case "pct_change": {
+        this.expectOp("(");
+        const ser = this.parseSeriesRef(ctx);
+        this.expectOp(",");
+        const nTok = this.next();
+        if (nTok.t !== "num") {
+          this.fail(`Expected a bar count at position ${nTok.pos} — e.g. pct_change(close, 5)`);
+        }
+        const n = Number(nTok.v);
+        if (!Number.isInteger(n) || n < 1 || n > SHIFT_MAX) {
+          this.fail(`pct_change lookback "${nTok.v}" out of range (1–${SHIFT_MAX})`);
+        }
+        this.expectOp(")");
+        this.budget();
+        this.budget(); this.budget(); this.budget(); // desugar emits ~5 nodes
+        const past: ExprNode = { k: "ser", s: ser.s, f: ser.f, shift: ser.shift + n };
+        const diff: ExprNode = { k: "bin", op: "-", a: { k: "ser", s: ser.s, f: ser.f, shift: ser.shift }, b: past };
+        return { k: "bin", op: "*", a: { k: "bin", op: "/", a: diff, b: { k: "abs", a: past } }, b: { k: "num", v: 100 } };
+      }
       case "sma":
       case "min":
       case "max":
@@ -398,11 +464,11 @@ class Parser {
     }
   }
 
-  /** sma(series, n) · min(n, series) · max(n, series) — both arg orders accepted for min/max. */
-  private parseWindow(fn: "sma" | "min" | "max", ctx: Ctx): ExprNode {
+  /** sma(series, n) · min/max(n, series) — highest/lowest force (series, n). */
+  private parseWindow(fn: "sma" | "min" | "max", ctx: Ctx, seriesFirst = false): ExprNode {
     this.expectOp("(");
     // Chartink order for min/max: min(N, series). Detect leading number.
-    if (fn !== "sma") {
+    if (fn !== "sma" && !seriesFirst) {
       const first = this.peek();
       const second = this.peek(1);
       if (first?.t === "num" && second?.t === "op" && second.v === ",") {

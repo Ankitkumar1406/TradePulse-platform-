@@ -68,3 +68,28 @@ export const FNO_UNIVERSE: ReadonlySet<string> = new Set([
   "POLYCAB", "KEI", "SUPREMEIND", "ASTRAL", "DIXON", "AMBER", "KAYNES",
   "SYRMA", "ELGIEQUIP", "AIAENG", "SCHAEFFLER", "WHIRLPOOL", "PGEL",
 ]);
+
+/**
+ * Nifty 50 constituents (approximate — the index committee rebalances
+ * semi-annually; verify on nseindia.com before trading). Used by the
+ * screener's universe bar. drifted tickers are harmless: a symbol that
+ * isn't in the DB simply matches nothing.
+ */
+export const NIFTY50_UNIVERSE: ReadonlySet<string> = new Set([
+  "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "ASIANPAINT", "AXISBANK",
+  "BAJAJ-AUTO", "BAJFINANCE", "BAJAJFINSV", "BEL", "BHARTIARTL",
+  "CIPLA", "COALINDIA", "DRREDDY", "EICHERMOT", "ETERNAL",
+  "GRASIM", "HCLTECH", "HDFCBANK", "HDFCLIFE", "HEROMOTOCO",
+  "HINDALCO", "HINDUNILVR", "ICICIBANK", "INDUSINDBK", "INFY",
+  "ITC", "JIOFIN", "JSWSTEEL", "KOTAKBANK", "LT",
+  "M&M", "MARUTI", "NESTLEIND", "NTPC", "ONGC",
+  "POWERGRID", "RELIANCE", "SBILIFE", "SBIN", "SHRIRAMFIN",
+  "SUNPHARMA", "TATACONSUM", "TATAMOTORS", "TATASTEEL", "TCS",
+  "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
+]);
+
+/** Universe sets store ticker roots; the DB stores Yahoo symbols with the
+ *  ".NS" suffix. Map both lists into DB form for IN (...) clauses. */
+export function universeToDbSymbols(set: ReadonlySet<string>): string[] {
+  return [...set].map((t) => (t.includes(".") ? t : `${t}.NS`));
+}
