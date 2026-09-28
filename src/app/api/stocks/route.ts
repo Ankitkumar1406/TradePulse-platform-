@@ -9,6 +9,7 @@ import {
   proComputedFor,
 } from "@/lib/pro-sql";
 import { FNO_UNIVERSE, NIFTY50_UNIVERSE, universeToDbSymbols } from "@/lib/fno-universe";
+import { isV3Payload, runScanV3, type V3CondPayload } from "@/lib/scan/api";
 
 export const dynamic = "force-dynamic";
 
@@ -145,6 +146,9 @@ export async function GET(req: Request) {
         hasPro = condRows.some(
           (r) => r != null && typeof r === "object" && ((r as { kind?: unknown }).kind === "expr" || (r as { kind?: unknown }).kind === "pattern")
         );
+      } else if (isV3Payload(parsed)) {
+        // v3 — sentence-style scan builder (registry-whitelisted vectorised evaluator)
+        return await runScanV3(parsed, url, sort, dir, page, perPage);
       } else if (isV2Payload(parsed)) {
         condRows = (parsed.rows as ProRowWire[]).slice(0, MAX_COND_ROWS);
         const rawBase = (parsed as { base?: unknown }).base;

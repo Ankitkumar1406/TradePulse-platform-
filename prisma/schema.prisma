@@ -295,6 +295,67 @@ model ScanResult {
   @@index([date])
 }
 
+// Fundamentals from Yahoo info/statements, refreshed WEEKLY into this table
+// (never mixed with the quote snapshot). Unit normalisation happens at
+// ingestion: dividendYield (Yahoo mixes % and fractions) is stored as %,
+// debtToEquity as a plain ratio, all money fields in INR absolute.
+// A null field means "no data" — the screener treats it as no match and the
+// results header reports "Fundamental data available for X of N stocks".
+model StockFundamentals {
+  symbol    String   @id
+  fetchedAt DateTime @default(now())
+
+  // snapshot (Yahoo quoteSummary defaultKeyStatistics / summaryDetail / financialData)
+  mcap           Float? // marketCap, INR
+  pe             Float? // trailing P/E
+  pb             Float? // price / book
+  divYield       Float? // %, normalised
+  epsTtm         Float? // INR / share
+  bookValue      Float? // INR / share
+  roe            Float? // % (returnOnEquity × 100)
+  profitMargin   Float? // %
+  opMargin       Float? // %
+  debtToEquity   Float? // ratio (Yahoo value / 100 when reported as %)
+  currentRatio   Float? // ratio
+  ev             Float? // enterprise value, INR
+  evEbitda       Float? // ×
+  evRevenue      Float? // ×
+  psTtm          Float? // ×
+  dividendRate   Float? // INR / share
+  payoutRatio    Float? // %
+  roa            Float? // %
+  grossMargin    Float? // %
+  quickRatio     Float? // ratio
+  revenueTtm     Float? // INR
+  ebitda         Float? // INR
+  netIncome      Float? // INR
+  fcf            Float? // INR
+  ocf            Float? // INR
+  totalDebt      Float? // INR
+  totalCash      Float? // INR
+  sharesOut      Float? // count
+  revenueGrowth  Float? // % YoY
+  earningsGrowth Float? // % YoY
+  epsGrowthQoQ   Float? // %
+  epsGrowthYoY   Float? // %
+  epsCagr3Y      Float? // % (needs 4 annual periods)
+  fwdEps         Float? // P2 — approximate
+  fwdPe          Float? // P2 — approximate
+  peg            Float? // P2 — approximate
+  instHoldingPct Float? // P2 — proxy
+  insiderHoldingPct Float? // P2 — proxy
+
+  // quarterly / annual slices, index 0 = latest (q0 / fy0)
+  epsQuarterlys      Json? // [q0..q7] EPS ₹
+  salesQuarterlys    Json? // [q0..q7] revenue ₹
+  netProfitQuarterlys Json? // [q0..q7] net profit ₹
+  annualEpss         Json? // [fy0..fy4] EPS ₹
+  annualRevenues     Json? // [fy0..fy4] revenue ₹
+  annualNetProfits   Json? // [fy0..fy4] net profit ₹
+
+  @@index([fetchedAt])
+}
+
 // TradePulse user. Created on first login (Supabase Auth when configured,
 // local email + password fallback otherwise); profile fields are completed
 // through the mandatory first-time onboarding flow.

@@ -11,15 +11,11 @@ import {
 } from "lucide-react";
 import { AddToWatchlistButton } from "@/components/add-to-watchlist";
 import {
-  ConditionBuilder,
-  legacyDefToRows,
-  v2DefToRows,
-  wirePayload,
+  ScanBuilder,
   type BuilderInitial,
   type BuilderStateInfo,
   type UniverseState,
-  type V2Row,
-} from "@/components/condition-builder";
+} from "@/components/scan-builder/scan-builder";
 import {
   Pager,
   ResultsTable,
@@ -313,25 +309,17 @@ export function ScreenerTab({
   const loadScreen = (s: SavedScreen) => {
     try {
       const def = JSON.parse(s.definition) as {
+        v?: number;
+        scan?: unknown;
         rows?: unknown[];
         ids?: string[];
         min?: number;
         q?: unknown; sector?: unknown; sort?: unknown; dir?: unknown;
         uni?: Partial<UniverseState>;
       };
-      if (s.kind === "conditions" && Array.isArray(def.rows)) {
-        // v2 definitions carry UI-shaped rows (terms with tf/offset/params);
-        // legacy definitions carry flat wire rows and need conversion.
-        let rows: V2Row[];
-        let orNote = false;
-        const firstRow = def.rows[0] as { left?: unknown } | undefined;
-        if (def.rows.length > 0 && firstRow?.left != null) {
-          rows = v2DefToRows(def.rows);
-        } else {
-          const conv = legacyDefToRows(def.rows);
-          rows = conv.rows;
-          orNote = conv.orUsed;
-        }
+      if (s.kind === "conditions") {
+        // v3 definitions load natively; v2 / legacy rows and Chartink-style text
+        // convert best-effort inside the new builder (defToScan).
         const uni: UniverseState | undefined = def.uni
           ? {
               universe: def.uni.universe === "n50" || def.uni.universe === "n500" || def.uni.universe === "fno" ? def.uni.universe : "all",
@@ -340,9 +328,9 @@ export function ScreenerTab({
               minTurnoverCr: typeof def.uni.minTurnoverCr === "string" ? def.uni.minTurnoverCr : "",
             }
           : undefined;
-        setBuilderState({ name: s.name, dirty: false, wireJson: wirePayload(rows) });
+        const payload = s.kind === "conditions" && def.v === 3 ? def.scan : def;
         loadNonce.current += 1;
-        setBuilderLoad({ rows, name: s.name, screenId: s.id, baselineWire: wirePayload(rows), legacyOrNote: orNote, nonce: loadNonce.current, uni });
+        setBuilderLoad({ def: payload, name: s.name, screenId: s.id, baselineWire: def.v === 3 ? undefined : JSON.stringify(def), nonce: loadNonce.current, uni });
         setMode("builder");
       } else if (s.kind === "multi" && Array.isArray(def.ids)) {
         setSel(def.ids.slice(0, 8));
@@ -599,7 +587,7 @@ export function ScreenerTab({
 
       {/* ------------------------------------------------ builder mode */}
       {mode === "builder" && (
-        <ConditionBuilder
+        <ScanBuilder
           key={builderLoad?.nonce ?? "fresh"}
           initial={builderLoad}
           sectors={data?.sectors ?? []}

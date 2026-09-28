@@ -52,6 +52,7 @@ import {
   type FundPeriod as FundPeriodT,
   type RegistryItem,
 } from "@/lib/scan/registry";
+import "@/lib/scan/registry-items"; // registers the full registry for the picker
 import {
   canFinish,
   comparatorsAllowed,
@@ -427,7 +428,7 @@ function parseNum(raw: string): number | null {
 // ---------------------------------------------------------------- token → chip tree
 
 /** Everything the recursive chip renderer needs — threaded down fn args / brackets. */
-interface ChipCtx {
+export interface ChipCtx {
   side: PatchSide;
   dispatch: (a: SMAction) => void;
   state: SMState;
